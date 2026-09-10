@@ -300,7 +300,7 @@ double AudioPluginAudioProcessor::getTailLengthSeconds() const { return 0.0; }
 int AudioPluginAudioProcessor::getNumPrograms() { return 1; }
 int AudioPluginAudioProcessor::getCurrentProgram() { return 0; }
 void AudioPluginAudioProcessor::setCurrentProgram(int index) { juce::ignoreUnused(index); }
-const juce::String AudioPluginAudioProcessor::getProgramName(int index) { juce::ignoreUnused(index); return {}; }
+const juce::String AudioPluginAudioProcessor::getProgramName(int index) { juce::ignoreUnused(index); return "Default"; }
 void AudioPluginAudioProcessor::changeProgramName(int index, const juce::String& newName)
 {
     juce::ignoreUnused(index, newName);

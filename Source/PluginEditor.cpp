@@ -114,33 +114,13 @@ void AudioPluginAudioProcessorEditor::bindSliderToParameter(
     const juce::String& parameterId,
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment)
 {
-    if (!PluginParameters::isSampleSpecificParameterId(parameterId))
-    {
-        attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
-            processorRef.parameters,
-            parameterId,
-            slider);
-        return;
-    }
+    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.parameters,
+        parameterId,
+        slider);
 
-    if (auto* parameter = processorRef.parameters.getParameter(parameterId))
-    {
-        const auto range = parameter->getNormalisableRange();
-        slider.setRange(range.start, range.end, range.interval);
-        slider.textFromValueFunction = [parameter] (double value)
-        {
-            return parameter->getText(parameter->convertTo0to1(static_cast<float>(value)), 0);
-        };
-        slider.valueFromTextFunction = [parameter] (const juce::String& text)
-        {
-            return static_cast<double>(parameter->convertFrom0to1(parameter->getValueForText(text)));
-        };
-        slider.setDoubleClickReturnValue(true, parameter->convertFrom0to1(parameter->getDefaultValue()));
-    }
-    else
-    {
-        slider.setRange(0.0, 1.0, 0.0);
-    }
+    if (!PluginParameters::isSampleSpecificParameterId(parameterId))
+        return;
 
     sampleSpecificSliderBindings.push_back(SampleSpecificSliderBinding { &slider, parameterId });
 
@@ -165,7 +145,7 @@ void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
 
         const float fallbackValue = getParameterDefaultValue(binding.parameterId);
         const float sampleValue = processorRef.getSampleSpecificParameterValue(binding.parameterId, fallbackValue);
-        binding.slider->setValue(sampleValue, juce::dontSendNotification);
+        binding.slider->setValue(sampleValue, juce::sendNotificationSync);
     }
 
     refreshingSampleSpecificControls = false;

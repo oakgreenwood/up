@@ -5,3 +5,4 @@ build-mac-intel-legacy
 test.exe
 com.apple.DeveloperTools
 build_debug_vst3.sh
+validation-logs/
