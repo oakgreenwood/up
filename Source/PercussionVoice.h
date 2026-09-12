@@ -4,7 +4,6 @@
 
 #include "PercussionSound.h"
 #include "Playback/NoteStartDeclicker.h"
-#include "Playback/OneShotPitchCache.h"
 #include "Playback/RealtimeWarpPlayer.h"
 #include "Playback/SamplePlaybackRenderer.h"
 #include "Playback/SustainTailShaper.h"
@@ -41,7 +40,6 @@ public:
     void setWarpEnabledParam(std::atomic<bool>* p) { warpEnabledParam = p; }
     void setHostBpmMovingParam(std::atomic<bool>* p) { hostBpmMovingParam = p; }
     void setSampleSpecificCache(const SampleSpecificRealtimeCache* cache) noexcept { sampleSpecificCache = cache; }
-    void setOneShotPitchCache(OneShotPitchCache* cache) noexcept { oneShotPitchCache = cache; }
     void setWarpCachePrewarmer(WarpCachePrewarmer* cache) noexcept { warpCachePrewarmer = cache; }
 
 private:
@@ -88,7 +86,6 @@ private:
 
     PercussionSound* currentSound = nullptr;
     WarpCachePrewarmer::Lease activeWarpCache;
-    OneShotPitchCache::Lease oneShotPitchLease;
     const juce::AudioBuffer<float>* activeBuffer = nullptr;
     const SampleMetadata* metadata = nullptr;
 
@@ -110,10 +107,8 @@ private:
     std::atomic<bool>* warpEnabledParam = nullptr;
     std::atomic<bool>* hostBpmMovingParam = nullptr;
     const SampleSpecificRealtimeCache* sampleSpecificCache = nullptr;
-    OneShotPitchCache* oneShotPitchCache = nullptr;
     WarpCachePrewarmer* warpCachePrewarmer = nullptr;
     double notePitchRatio = 1.0;
-    bool notePreservesLength = false;
 
     double appliedWarpLoopPitchRatio = 1.0;
     double pendingWarpLoopPitchRatio = 1.0;

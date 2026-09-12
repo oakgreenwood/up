@@ -28,19 +28,12 @@ Ordinary automation, selection synchronization, and UI refreshes do not count as
 edits. See [parameters and state](parameters-and-state.md#apply-to-all) for batch
 publication and persistence.
 
-## Pitch Duration Mode
+## Pitch
 
-The `Keep length` toggle sits just above Pitch. It is sample-specific, uses an
-APVTS button attachment, and defaults off. On preserves one-shot duration; off
-changes speed and duration with pitch. Both pitch and mode affect new hits only.
-The toggle is disabled for warp/loop samples, which retain their existing tempo
-and pitch behavior. The tooltip explains each mode.
-
-A small label beneath Pitch displays `Preparing...` while a new pitch or host
-sample rate renders, or `Pitch unavailable` if rendering failed. Previously
-prepared hits remain playable during preparation. The 30 Hz editor timer polls
-status and follows restored sample selection. Parameter listeners in the
-processor keep automation working when the editor is closed.
+The Pitch knob changes playback speed and duration for non-warp one-shots,
+affecting new hits only. The Keep length button and pitch-preparation status
+label are removed. Warp-enabled samples retain their existing tempo/pitch processing and
+background caching.
 
 ## Sample Group Selector
 

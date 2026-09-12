@@ -50,13 +50,12 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
     const double sourceFramesPerOutputSample = juce::jmax(1e-9, state.pitchRatio);
     const double unwarpedPunchTimeRatio = activeSourceSampleRate
                                         / (sourceFramesPerOutputSample * outputSampleRate);
-    const double punchTimeRatio = state.pitchPreservesLength ? 1.0
-                                : state.usingWarpCache ? state.currentTimeRatio
-                                                       : unwarpedPunchTimeRatio;
+    const double punchTimeRatio = state.usingWarpCache ? state.currentTimeRatio
+                                                     : unwarpedPunchTimeRatio;
 
     const auto getPunchPlaybackTimeSec = [&state, activeSourceSampleRate, sourceFramesPerOutputSample, outputSampleRate]() noexcept
     {
-        if (state.usingWarpCache || state.pitchPreservesLength)
+        if (state.usingWarpCache)
             return state.sourceSamplePosition / activeSourceSampleRate;
 
         return state.sourceSamplePosition / (sourceFramesPerOutputSample * outputSampleRate);

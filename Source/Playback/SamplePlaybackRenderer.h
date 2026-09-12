@@ -17,7 +17,6 @@ public:
         double activeSourceSampleRate = 48000.0;
         double currentTimeRatio = 1.0;
         bool usingWarpCache = false;
-        bool pitchPreservesLength = false;
     };
 
     struct Result

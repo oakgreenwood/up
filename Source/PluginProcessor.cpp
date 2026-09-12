@@ -9,7 +9,7 @@
 //==============================================================================
 namespace
 {
-    constexpr int percussionVoiceCount = OneShotPitchCache::maximumVoices;
+    constexpr int percussionVoiceCount = 8;
     constexpr double percussionOriginalBpm = 153.0;
 
     const juce::Identifier selectedSampleGroupIndexProperty { "selectedSampleGroupIndex" };
@@ -50,7 +50,6 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     rebuildSampleSpecificCache();
     warpCachePrewarmer = std::make_unique<WarpCachePrewarmer>(
         sampler, sampleSpecificCache, warpEnabledAtomic, *hostTempo.getBpmAtomic());
-    oneShotPitchCache = std::make_unique<OneShotPitchCache>(sampler, sampleSpecificCache);
     updateVoiceSharedState();
     for (const auto& parameter : PluginParameters::sampleSpecificParameters)
         parameters.addParameterListener(parameter.id, this);
@@ -82,7 +81,6 @@ void AudioPluginAudioProcessor::updateVoiceSharedState()
             v->setHostBpmParam(hostTempo.getBpmAtomic());
             v->setHostBpmMovingParam(hostTempo.getMovingAtomic());
             v->setSampleSpecificCache(&sampleSpecificCache);
-            v->setOneShotPitchCache(oneShotPitchCache.get());
             v->setWarpCachePrewarmer(warpCachePrewarmer.get());
         }
     }
@@ -212,21 +210,6 @@ void AudioPluginAudioProcessor::synchroniseSelectedSampleParameters()
                 definition.id, parameter->convertFrom0to1(parameter->getDefaultValue()))));
 }
 
-bool AudioPluginAudioProcessor::selectedSampleSupportsPitchMode() const noexcept
-{
-    const int groupIndex = getSelectedSampleGroupIndex();
-    return oneShotPitchCache != nullptr && groupIndex >= 0 && groupIndex < (int) sampleGroups.size()
-        && oneShotPitchCache->supportsMidiNote(sampleGroups[(size_t) groupIndex].midiNote);
-}
-
-OneShotPitchCache::Status AudioPluginAudioProcessor::getSelectedSamplePitchStatus() const noexcept
-{
-    const int groupIndex = getSelectedSampleGroupIndex();
-    if (oneShotPitchCache != nullptr && groupIndex >= 0 && groupIndex < (int) sampleGroups.size())
-        return oneShotPitchCache->getStatus(sampleGroups[(size_t) groupIndex].midiNote);
-    return OneShotPitchCache::Status::ready;
-}
-
 void AudioPluginAudioProcessor::clampSelectedSampleGroupIndex() noexcept
 {
     const int index = sampleGroups.empty() ? -1
@@ -268,8 +251,7 @@ AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
     sampler.allNotesOff(1, false);
     sampler.clearLayerMappings();
     sampler.clearVoices();
-    oneShotPitchCache.reset();
-    warpCachePrewarmer.reset(); // Join workers before freeing immutable source sounds.
+    warpCachePrewarmer.reset(); // Join the worker before freeing immutable source sounds.
     sampler.clearSounds();
 }
 
@@ -277,8 +259,6 @@ AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 
 void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-    if (oneShotPitchCache != nullptr)
-        oneShotPitchCache->setPlaybackSampleRate(sampleRate);
     sampler.setCurrentPlaybackSampleRate(sampleRate);
     rzhavProcessor.prepare(sampleRate);
     midiNoteActivity.reset();

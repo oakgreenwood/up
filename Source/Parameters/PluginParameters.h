@@ -19,6 +19,7 @@ namespace PluginParameters
 
     inline constexpr const char* samplePunchId = "samplePunch";
     inline constexpr const char* samplePitchSemitonesId = "samplePitchSemitones";
+    // Inert legacy host parameter: retain its ID and layout slot for old projects.
     inline constexpr const char* samplePitchPreserveLengthId = "samplePitchPreserveLength";
     inline constexpr bool samplePitchPreserveLengthDefault = false;
 
@@ -39,7 +40,7 @@ namespace PluginParameters
 
     // Register each sample-specific effect once. These callbacks must be realtime-safe.
     // The registry drives automation, selection, persistence, and Apply to All.
-    extern const std::array<SampleSpecificParameter, 4> sampleSpecificParameters;
+    extern const std::array<SampleSpecificParameter, 3> sampleSpecificParameters;
     const SampleSpecificParameter* findSampleSpecificParameter(const juce::String& parameterId) noexcept;
     bool isSampleSpecificParameterId(const juce::String& parameterId) noexcept;
 

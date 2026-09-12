@@ -41,9 +41,6 @@ public:
     double getSourceSampleRate() const noexcept { return sourceSampleRate; }
     int getMidiRootNote() const noexcept { return midiRootNote; }
     bool isOneShot() const noexcept { return !warpEnabled && (metadata == nullptr || !metadata->loop); }
-    // Assigned once before playback, when registering the background pitch cache.
-    void setOneShotPitchIndex(int index) noexcept { oneShotPitchIndex = index; }
-    int getOneShotPitchIndex() const noexcept { return oneShotPitchIndex; }
     // Assigned once while the warp-cache worker builds its immutable inventory.
     void setWarpCacheIndex(int index) noexcept { warpCacheIndex = index; }
     int getWarpCacheIndex() const noexcept { return warpCacheIndex; }
@@ -80,7 +77,6 @@ private:
 
     double sourceSampleRate = 48000.0;
     int midiRootNote = 60;
-    int oneShotPitchIndex = -1;
     int warpCacheIndex = -1;
 
     juce::BigInteger midiNotes;

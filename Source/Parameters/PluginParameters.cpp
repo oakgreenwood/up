@@ -3,7 +3,7 @@
 
 namespace PluginParameters
 {
-    const std::array<SampleSpecificParameter, 4> sampleSpecificParameters {{
+    const std::array<SampleSpecificParameter, 3> sampleSpecificParameters {{
         { samplePunchId,
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getPunchAmountForMidiNote(note); },
@@ -17,11 +17,6 @@ namespace PluginParameters
               cache.setPitchSemitonesForMidiNote(note, juce::jlimit(
                   samplePitchSemitonesMinimum, samplePitchSemitonesMaximum, value));
           } },
-        { samplePitchPreserveLengthId,
-          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
-          { return cache.getPitchPreserveLengthForMidiNote(note) ? 1.0f : 0.0f; },
-          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
-          { cache.setPitchPreserveLengthForMidiNote(note, value >= 0.5f); } },
         { sampleGainDbId,
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getGainDbForMidiNote(note); },

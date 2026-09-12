@@ -162,7 +162,6 @@ void PercussionVoice::beginPlayback(float velocity)
 {
     activeWarpCache.reset();
     activeBuffer = nullptr;
-    oneShotPitchLease.reset();
     metadata = nullptr;
     playbackState = {};
     playbackState.activeSourceSampleRate = 44100.0;
@@ -187,8 +186,6 @@ void PercussionVoice::beginPlayback(float velocity)
     sustainShaper.setMetadata(metadata);
     if (warpCachePrewarmer != nullptr && currentSound->isWarpEnabled())
         warpCachePrewarmer->recordPlayed(*currentSound);
-    if (oneShotPitchCache != nullptr && currentSound->isOneShot())
-        oneShotPitchCache->recordPlayed(*currentSound);
 
     double sourceSampleRate = currentSound->getSourceSampleRate();
     double playbackSampleRate = getSampleRate();
@@ -200,8 +197,6 @@ void PercussionVoice::beginPlayback(float velocity)
 
     notePitchRatio = sampleSpecificCache != nullptr
         ? sampleSpecificCache->getPitchRatioForMidiNote(currentSound->getMidiRootNote()) : 1.0;
-    notePreservesLength = currentSound->isOneShot() && sampleSpecificCache != nullptr
-        && sampleSpecificCache->getPitchPreserveLengthForMidiNote(currentSound->getMidiRootNote());
     const double samplePitchRatio = notePitchRatio;
     resetWarpLoopPitchDebounce(samplePitchRatio);
 
@@ -217,18 +212,6 @@ void PercussionVoice::beginPlayback(float velocity)
 
     if (currentSound->isOneShot())
     {
-        if (notePreservesLength && !isNeutralPitchRatio(notePitchRatio) && oneShotPitchCache != nullptr)
-        {
-            oneShotPitchLease = oneShotPitchCache->acquire(*currentSound);
-            if (const auto* prepared = oneShotPitchLease.getBuffer())
-            {
-                activeBuffer = prepared;
-                playbackState.activeSourceSampleRate = oneShotPitchLease.getSampleRate();
-            }
-            // Before the first render is ready, use the original at its natural
-            // pitch and length. Later changes keep the previous prepared version.
-        }
-        playbackState.pitchPreservesLength = notePreservesLength;
         updateSampleRendererPitchRatio();
         return;
     }
@@ -306,14 +289,12 @@ void PercussionVoice::clearActivePlayback()
     currentSound = nullptr;
     activeWarpCache.reset();
     activeBuffer = nullptr;
-    oneShotPitchLease.reset();
     metadata = nullptr;
 
     playbackState = {};
     sustainShaper.setMetadata(nullptr);
     noteStartDeclicker.reset();
     notePitchRatio = 1.0;
-    notePreservesLength = false;
     resetWarpLoopPitchDebounce(1.0);
     resetWarpFlags();
 }
@@ -753,9 +734,6 @@ bool PercussionVoice::shouldTimeWarpForCurrentHost() const noexcept
 
 bool PercussionVoice::shouldPreserveLengthForPitch() const noexcept
 {
-    if (currentSound != nullptr && currentSound->isOneShot())
-        return notePreservesLength;
-
     return currentSound != nullptr
         && currentSound->isWarpEnabled()
         && hostBpmParam != nullptr

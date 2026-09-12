@@ -62,94 +62,33 @@ the punch amount at the transient, then decays over 20 ms. Apply it to every
 metadata transient on every loop pass. Warp maps starts to
 `transientTime * timeRatio`; rise/decay durations stay fixed in playback time.
 
-One-shots (`warp=false`, `loop=false`) latch pitch and the sample-specific
-`samplePitchPreserveLength` switch at note start. Changes affect new hits only;
-existing hits keep their starting buffer, pitch, and mode. The switch defaults
-to false, including when restoring older state without it:
-
-- Off: pitch changes playback speed and length. Punch follows the speed-adjusted
-  transient positions, with its rise/decay durations fixed in playback time.
-- On: pitch preserves the original duration, independently of tempo sync.
-  `SamplePlaybackRenderer::State::pitchPreservesLength` explicitly keeps Punch's
-  transient time ratio at `1.0`; the original transient timestamps and sustain
-  timeline remain unchanged. Neutral pitch plays the original buffer.
-
-The existing live pitch/debounce behavior for warp/loop samples is unchanged.
-The editor disables the new switch for those samples.
+One-shots (`warp=false`, `loop=false`) latch their sample-specific pitch at note
+start. Pitch changes playback speed and duration: higher pitch shortens the hit,
+lower pitch lengthens it. Changes affect new hits only. Punch follows the
+speed-adjusted transient positions, with its rise/decay durations fixed in
+playback time. Sustain follows the original source position as playback advances.
+There is no one-shot duration mode, background pitch render, or preparation wait.
+Legacy saved `samplePitchPreserveLength` values have no playback effect.
 
 With metadata `warp=true` and tempo sync enabled, non-neutral pitch must preserve
 duration. Neutral pitch uses the BPM-only offline cache without pitch-cache
 allocation. All warp-enabled samples, including non-looping ones, may use the
 lazy pitched cache below.
 
-## One-Shot Pitch Preparation
+## One-Shot Playback
 
-`Playback/OneShotPitchCache` runs a persistent coordinator and a fixed pool of
-six render workers, polling atomic per-note pitch/mode requests. It debounces
-pitch, mode, and host-rate changes for 80 ms and renders all velocity
-layers/variations for a MIDI note before publishing them together.
-Playback keeps using the last prepared group while a replacement is pending; if
-none exists, it plays the original at natural pitch and length. A playing voice
-never adopts a newer cache. Zero pitch bypasses preparation immediately.
-
-- The five most recently played distinct one-shot sample groups take priority,
-  newest first among settled requests. A group is one selector item/MIDI note,
-  including all its velocity layers and variations; repeated variations of the
-  same group only promote that group. Plays count even before Keep length is
-  enabled. History lasts for this plugin instance and is not serialized.
-- Prepare one group at a time. Up to six pool jobs claim independent recordings
-  from that group's fixed output vector, each with a separate Rubber Band engine.
-  Jobs may cross velocity-group boundaries. All jobs must finish successfully
-  before the coordinator publishes the complete group. A one-recording group
-  uses one render job; no more than six one-shot renders run simultaneously.
-- Apply to All, individual edits, automation, and state restore use the same
-  priority policy. After pending recent groups finish (or fail/become ineligible),
-  prepare remaining eligible groups in MIDI-note order. Pending recent requests
-  also take priority while debouncing. The coordinator observes edits every
-  20 ms during renders, so requests debounce concurrently.
-- If a recent group needs preparation while a group outside the recent five is
-  rendering, cancel that lower-priority batch and revisit it later. Its partial
-  output is discarded, not published or resumed. Already-started recent groups
-  finish before the priority order is reconsidered. Continuous changes can defer
-  preparation of less recent groups.
-- Rubber Band R3, offline two-pass processing, standard multi-resolution window,
-  channels together, internal threading disabled. No additional dependencies.
-- Cache buffers use the host sample rate. Rubber Band receives time ratio
-  `hostRate / sourceRate` and pitch scale `pitchRatio * sourceRate / hostRate`;
-  their product leaves the internal stretch at the musical pitch ratio.
-  Output length is `round(sourceFrames * hostRate / sourceRate)`, independent of
-  pitch. Excess output is drained; a short output is zero-padded.
-- No transient key-frame map is supplied to R3 for one-shot pitch preparation.
-  R3 chooses local timing while total duration stays fixed. Punch continues to
-  use the original metadata transient times; the rendered transients are not
-  explicitly pinned to those times.
-- `study`/`process` use 1024-frame chunks. Superseded requests, recent-group
-  preemption, failures, and shutdown cancel between chunks and variations; output
-  retrieval and finite-sample checks also observe cancellation. Failed renders
-  leave the last prepared group intact and show `Pitch unavailable` until pitch,
-  mode, or sample rate changes. Priority preemption is retried, not marked failed.
-- Each group has `maximumVoices + 2` fixed slots. An atomic reader count pins a
-  slot for each voice; `-1` reserves it for the worker. Audio acquisition makes
-  at most two attempts, falling back to the original on a publication race.
-  Audio release only decrements the count. The worker reclaims retired buffers
-  after the final reader releases them; successive replacements never mutate
-  a pinned buffer. One current group, active old groups, and one new render are
-  retained, bounded by the eight-voice pool and fixed slots.
-- Original sounds/metadata remain immutable while the worker runs. Teardown
-  stops/clears voices, joins the coordinator and its outstanding pool jobs, stops
-  the pool, then clears sounds. Host-rate changes trigger a replacement; the previous cache retains its own sample rate until
-  replacement is ready. No worker access to the sampler after construction.
+One-shots read the immutable original sample through `SamplePlaybackRenderer`.
+The source step is `sourceRate / hostRate * pitchRatio`; they never enter Rubber
+Band, acquire a prepared pitch buffer, or start a pitch-render worker. The former
+one-shot coordinator, six-worker pool, and recent-group pitch cache are removed.
+Apply to All updates per-sample pitch atomics for subsequent hits immediately.
 
 The sample renderer handles zero blocks, renders the final source frame, and
-finishes exhausted voices immediately so leases retire. Loop wrapping uses
-`fmod`, and invalid positions/rates end the voice before buffer access.
-
-The one-shot coordinator/pool and the separate warp worker use fixed-slot
-publication and off-audio reclamation. The six-worker limit applies to one-shot
-R3 rendering; the warp worker can render concurrently. See [the pitch-mode realtime audit](realtime-audio-audit-pitch-mode.md)
-and [the parallel-preparation audit](realtime-audio-audit-parallel-pitch-cache.md),
-plus the warp-cache audit below for remaining fallback/MIDI blockers; this is not
-a plugin-wide realtime-safety claim.
+finishes exhausted voices immediately. Loop wrapping uses `fmod`, and invalid
+positions/rates end the voice before buffer access. Warp caches retain their
+separate worker, recent-five scheduling, fixed-slot publication and off-audio
+reclamation. See [the one-shot removal audit](realtime-audio-audit-oneshot-pitch-removal.md)
+for remaining plugin-wide realtime blockers.
 
 ## Pitch-Aware Warp Caches
 

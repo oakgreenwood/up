@@ -87,19 +87,6 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible(samplePitchLabel);
     configureKnobLabel(samplePitchLabel, "Pitch");
 
-    addAndMakeVisible(samplePitchModeButton);
-    samplePitchModeButton.setClickingTogglesState(true);
-    samplePitchModeButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
-    samplePitchModeButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::black);
-    samplePitchModeButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
-    samplePitchModeButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
-    samplePitchModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-        processorRef.parameters, PluginParameters::samplePitchPreserveLengthId, samplePitchModeButton);
-    addAndMakeVisible(samplePitchStatusLabel);
-    configureKnobLabel(samplePitchStatusLabel, {});
-    samplePitchStatusLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
-    samplePitchStatusLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
-
     addAndMakeVisible(applyToAllButton);
     applyToAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
     applyToAllButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
@@ -197,10 +184,6 @@ void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
         const float sampleValue = processorRef.getSampleSpecificParameterValue(binding.parameterId, fallbackValue);
         binding.slider->setValue(sampleValue, juce::sendNotificationSync);
     }
-
-    samplePitchModeButton.setToggleState(processorRef.getSampleSpecificParameterValue(
-        PluginParameters::samplePitchPreserveLengthId, 0.0f) >= 0.5f, juce::sendNotificationSync);
-    refreshPitchModeStatus();
 }
 
 void AudioPluginAudioProcessorEditor::parameterGestureChanged(int parameterIndex, bool gestureIsStarting)
@@ -264,18 +247,6 @@ void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
                                        : "Change a sample-specific effect, then apply that value to all samples.");
 }
 
-void AudioPluginAudioProcessorEditor::refreshPitchModeStatus()
-{
-    const bool supported = processorRef.selectedSampleSupportsPitchMode();
-    samplePitchModeButton.setEnabled(supported);
-    samplePitchModeButton.setTooltip(supported
-        ? "On: pitch keeps the original length. Off: pitch changes playback speed and length. New hits only."
-        : "Available for one-shots. Tempo-synced samples use their existing warp mode.");
-    const auto status = processorRef.getSelectedSamplePitchStatus();
-    samplePitchStatusLabel.setText(status == OneShotPitchCache::Status::preparing ? "Preparing..."
-        : status == OneShotPitchCache::Status::failed ? "Pitch unavailable" : "", juce::dontSendNotification);
-}
-
 float AudioPluginAudioProcessorEditor::getParameterDefaultValue(const juce::String& parameterId) const
 {
     if (auto* parameter = processorRef.parameters.getParameter(parameterId))
@@ -308,7 +279,6 @@ void AudioPluginAudioProcessorEditor::timerCallback()
         sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
         refreshSampleSpecificControls();
     }
-    refreshPitchModeStatus();
     for (int midiNote = 0; midiNote < AudioPluginAudioProcessor::midiNoteActivityCount; ++midiNote)
     {
         const auto noteIndex = (size_t) midiNote;
@@ -364,8 +334,6 @@ void AudioPluginAudioProcessorEditor::resized()
     placeKnobWithLabel(sampleGainSlider, sampleGainLabel, getWidth() - labelWidth - 186, 222);
     placeKnobWithLabel(samplePunchSlider, samplePunchLabel, getWidth() - labelWidth - 105, 222);
     placeKnobWithLabel(samplePitchSlider, samplePitchLabel, getWidth() - labelWidth - 24, 222);
-    samplePitchModeButton.setBounds(getWidth() - 118, 168, 92, 24);
-    samplePitchStatusLabel.setBounds(getWidth() - 128, 282, 112, 18);
     applyToAllButton.setBounds(getWidth() - 201, 320, 177, 28);
     applyToAllStatusLabel.setBounds(getWidth() - 201, 352, 177, 18);
     warpButton.setBounds(23, 18, 170, 110);

@@ -45,8 +45,6 @@ public:
     juce::Label sampleGainLabel;
     juce::Label samplePunchLabel;
     juce::Label samplePitchLabel;
-    juce::TextButton samplePitchModeButton { "Keep length" };
-    juce::Label samplePitchStatusLabel;
     juce::TextButton applyToAllButton { "APPLY TO ALL" };
     juce::Label applyToAllStatusLabel;
     juce::ToggleButton warpButton;
@@ -60,7 +58,6 @@ public:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePunchAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePitchAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> warpAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> samplePitchModeAttachment;
 
 private:
     struct SampleSpecificSliderBinding
@@ -80,7 +77,6 @@ private:
                                const juce::String& parameterId,
                                std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment);
     void refreshSampleSpecificControls();
-    void refreshPitchModeStatus();
     void refreshApplyToAllButton();
     void parameterValueChanged(int parameterIndex, float newValue) override;
     void parameterGestureChanged(int parameterIndex, bool gestureIsStarting) override;

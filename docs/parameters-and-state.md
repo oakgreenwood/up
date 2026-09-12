@@ -17,7 +17,7 @@ APVTS parameters are serialized with `parameters.copyState()` and restored with
 | `warpEnabled` | `Tempo sync` | bool | `true` | Enables tempo-sync warp behavior |
 | `samplePunch` | `Punch` | float `0..1` | `0` | Sample-specific transient volume boost |
 | `samplePitchSemitones` | `Pitch` | float `-8..8` semitones | `0` | Sample-specific pitch offset for the selected sample group |
-| `samplePitchPreserveLength` | `Pitch keep length` | bool | `false` | Sample-specific one-shot duration mode, latched at note start |
+| `samplePitchPreserveLength` | `Pitch keep length` | bool | `false` | Inert legacy host parameter; no playback effect |
 | `sampleGainDb` | `Gain` | float `-10..10` dB | `0` | Sample-specific volume, smoothed over 10 ms |
 
 ## Program Metadata
@@ -37,7 +37,7 @@ ValueTree child, keyed by `(noteIndex, pitchIndex)` with legacy index fallback.
 Its `ValueTree`, `CriticalSection`, string IDs, and linear scans belong only to
 UI edits and state save/restore; never read it from audio.
 
-For `samplePitchSemitones`, `samplePunch`, `samplePitchPreserveLength`, and `sampleGainDb`:
+For `samplePitchSemitones`, `samplePunch`, and `sampleGainDb`:
 
 - Processor helpers read/write the selected group's stored values.
 - APVTS slider/button attachments report gestures/changes for host automation
@@ -47,22 +47,26 @@ For `samplePitchSemitones`, `samplePunch`, `samplePitchPreserveLength`, and `sam
   group's cached values; state restore does the same after rebuilding the cache.
 - `SampleSpecificRealtimeCache` is authoritative during use, indexed by the
   loaded group's MIDI note. It stores pitch semitones, the precomputed pitch
-  ratio, Punch, the duration-mode bool, and Gain in dB with a precomputed linear multiplier. Voices avoid state-tree access and
+  ratio, Punch, and Gain in dB with a precomputed linear multiplier. Voices avoid state-tree access and
   pitch exponentiation; the ratio is computed only when the parameter changes.
 - `getStateInformation` mirrors all cached groups to `SampleSpecificParameterState`
   before writing that child into `parameters.copyState()`. Restore uses
   `parameters.replaceState(...)` and rebuilds the cache from the saved child.
-  Missing duration-mode values in older state restore as false, regardless of
-  the previous instance value. Buffers and pending background work are not saved.
+  Buffers and pending background work are not saved.
 - After restoring per-sample values and tempo sync, request a full warp-cache
   startup pass through a scalar generation counter. The worker waits for a fresh
   valid host-BPM callback, then prepares all warp variants at their restored pitch
   even when transport is stopped. Matching caches are reused; superseded renders
   cancel. State restore does not render or wait for the worker. See
   [warp cache startup](playback-warp-and-transients.md#pitch-aware-warp-caches).
-- One-shots latch pitch/mode at note start. Their R3 coordinator/pool reads
-  scalar parameter atomics and publishes completed groups through the dedicated
-  fixed-slot cache; it never reads `ValueTree` or the selected UI group.
+- One-shots latch pitch at note start and play the original sample at the
+  corresponding speed. No one-shot pitch-preparation worker or cache remains.
+
+The removed Keep length mode retains its original host parameter ID, position,
+name and default as an inert compatibility entry, so subsequent parameter indices
+(including Gain) stay stable in existing projects. APVTS still saves/restores its
+value, but nothing reads it for playback, selection, or Apply to All. Old
+sample-specific mode properties may round-trip in the state tree but are ignored.
 
 Gain defaults to 0 dB for missing values in older state. Its cache rejects non-finite
 input and clamps to -10..10 dB; conversion to linear gain occurs only on writes.
@@ -74,8 +78,7 @@ hits. See [the Gain realtime audit](realtime-audio-audit-gain.md).
 `APPLY TO ALL` copies the last UI-edited sample-specific parameter and its captured
 value to every loaded sample group, including all velocity layers/variations that
 share that group's MIDI note. Other parameters and the selected group stay as they
-were. Gain, Punch, Pitch, and Keep length are registered; Keep length remains inactive
-for warp/loop playback even when its stored value is copied there.
+were. Gain, Punch, and Pitch are registered.
 
 The editor observes APVTS change gestures for every registered parameter. Mere
 selection, control refresh, ordinary host automation, and state restore do not
@@ -91,15 +94,12 @@ state for every group, then updates the selected host parameter if needed. It al
 marks non-parameter state as changed so hosts can save the batch even when the
 selected parameter already matched. Playback reads the existing scalar atomics;
 the batch never walks groups or touches `ValueTree` on audio. Updates publish per
-group rather than as an indivisible snapshot. Existing pitch preparation, live
-Punch response, and one-shot note-start latching still apply.
+group rather than as an indivisible snapshot. Existing warp-cache preparation, live
+Punch response, and one-shot note-start pitch latching still apply.
 
-For preserved-length one-shot preparation, the five most recently played sample
-groups are prepared first, then other eligible groups. A fixed pool of six
-workers renders independent recordings within each group, and the whole group
-publishes together. Parameter callbacks do not submit jobs or wait for preparation.
-See [one-shot pitch preparation](playback-warp-and-transients.md#one-shot-pitch-preparation)
-for cancellation, debounce, and priority details.
+One-shot pitch changes need no background preparation; subsequent hits use the
+new value directly. Warp samples retain their existing startup/recent-five cache
+policy. See [playback](playback-warp-and-transients.md).
 
 See [the Apply to All realtime audit](realtime-audio-audit-apply-to-all.md) for the
 inspection scope and existing render-path blockers.

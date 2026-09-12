@@ -6,7 +6,6 @@
 #include <juce_core/juce_core.h>
 
 static_assert(std::atomic<float>::is_always_lock_free);
-static_assert(std::atomic<bool>::is_always_lock_free);
 
 SampleSpecificRealtimeCache::SampleSpecificRealtimeCache()
 {
@@ -27,9 +26,6 @@ void SampleSpecificRealtimeCache::reset() noexcept
 
     for (auto& punchAmount : punchAmountByMidiNote)
         punchAmount.store(0.0f, std::memory_order_relaxed);
-
-    for (auto& preserveLength : pitchPreserveLengthByMidiNote)
-        preserveLength.store(false, std::memory_order_relaxed);
 }
 
 void SampleSpecificRealtimeCache::setPitchSemitonesForMidiNote(int midiNote, float semitones) noexcept
@@ -58,18 +54,6 @@ float SampleSpecificRealtimeCache::getPitchSemitonesForMidiNote(int midiNote) co
 {
     return midiNote >= 0 && midiNote < midiNoteCount
         ? pitchSemitonesByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed) : 0.0f;
-}
-
-void SampleSpecificRealtimeCache::setPitchPreserveLengthForMidiNote(int midiNote, bool preserve) noexcept
-{
-    if (midiNote >= 0 && midiNote < midiNoteCount)
-        pitchPreserveLengthByMidiNote[(size_t) midiNote].store(preserve, std::memory_order_relaxed);
-}
-
-bool SampleSpecificRealtimeCache::getPitchPreserveLengthForMidiNote(int midiNote) const noexcept
-{
-    return midiNote >= 0 && midiNote < midiNoteCount
-        && pitchPreserveLengthByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed);
 }
 
 void SampleSpecificRealtimeCache::setPunchAmountForMidiNote(int midiNote, float amount) noexcept

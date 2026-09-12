@@ -11,7 +11,6 @@
 #include "PercussionSynthesiser.h"
 #include "Parameters/SampleSpecificParameterState.h"
 #include "Parameters/SampleSpecificRealtimeCache.h"
-#include "Playback/OneShotPitchCache.h"
 #include "SampleLibrary/PercussionSampleLibrary.h"
 #include "Tempo/HostTempoTracker.h"
 #include "Warp/WarpCachePrewarmer.h"
@@ -74,8 +73,6 @@ public:
     void setSampleSpecificParameterValue(const juce::String& parameterId, float value);
     // Message thread only; copies one effect without changing the selected group.
     bool applySampleSpecificParameterToAll(const juce::String& parameterId, float value);
-    bool selectedSampleSupportsPitchMode() const noexcept;
-    OneShotPitchCache::Status getSelectedSamplePitchStatus() const noexcept;
 
 private:
     void addPercussionVoices();
@@ -96,7 +93,6 @@ private:
     std::atomic<int> selectedSampleGroupIndex { -1 };
     SampleSpecificParameterState sampleSpecificParameters;
     SampleSpecificRealtimeCache sampleSpecificCache;
-    std::unique_ptr<OneShotPitchCache> oneShotPitchCache;
     std::unique_ptr<WarpCachePrewarmer> warpCachePrewarmer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessor)
