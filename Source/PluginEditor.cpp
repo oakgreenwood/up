@@ -3,6 +3,8 @@
 #include "Parameters/PluginParameters.h"
 #include "UI/CustomLookAndFeel.h"
 
+#include <cmath>
+
 namespace
 {
 void configureKnobLabel(juce::Label& label, const juce::String& text)
@@ -49,6 +51,18 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible(sustainLabel);
     configureKnobLabel(sustainLabel, "Pomyatost");
 
+    addAndMakeVisible(sampleGainSlider);
+    sampleGainSlider.setComponentID(PluginUI::sampleGainSliderId);
+    sampleGainSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+    sampleGainSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    sampleGainSlider.setLookAndFeel(customLNF.get());
+    sampleGainSlider.setDoubleClickReturnValue(true, PluginParameters::sampleGainDbDefault);
+    sampleGainSlider.setMouseDragSensitivity(150);
+    bindSliderToParameter(sampleGainSlider, PluginParameters::sampleGainDbId, sampleGainAttachment);
+
+    addAndMakeVisible(sampleGainLabel);
+    configureKnobLabel(sampleGainLabel, "Gain");
+
     addAndMakeVisible(samplePunchSlider);
     samplePunchSlider.setComponentID(PluginUI::samplePunchSliderId);
     samplePunchSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
@@ -73,6 +87,37 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible(samplePitchLabel);
     configureKnobLabel(samplePitchLabel, "Pitch");
 
+    addAndMakeVisible(samplePitchModeButton);
+    samplePitchModeButton.setClickingTogglesState(true);
+    samplePitchModeButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
+    samplePitchModeButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::black);
+    samplePitchModeButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    samplePitchModeButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    samplePitchModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processorRef.parameters, PluginParameters::samplePitchPreserveLengthId, samplePitchModeButton);
+    addAndMakeVisible(samplePitchStatusLabel);
+    configureKnobLabel(samplePitchStatusLabel, {});
+    samplePitchStatusLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    samplePitchStatusLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
+
+    addAndMakeVisible(applyToAllButton);
+    applyToAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
+    applyToAllButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    applyToAllButton.onClick = [this]
+    {
+        if (lastEditedSampleParameter == nullptr)
+            return;
+
+        const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
+        if (processorRef.applySampleSpecificParameterToAll(
+                lastEditedSampleParameter->paramID, lastEditedSampleValue))
+            refreshSampleSpecificControls();
+    };
+    addAndMakeVisible(applyToAllStatusLabel);
+    configureKnobLabel(applyToAllStatusLabel, {});
+    applyToAllStatusLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    applyToAllStatusLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
+
     addAndMakeVisible(warpButton);
     warpButton.setComponentID(PluginUI::tempoSyncButtonId);
     warpButton.setButtonText({});
@@ -85,24 +130,36 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
     sampleGroupSelector.onSelectedIndexChanged = [this] (int selectedIndex)
     {
+        const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
         processorRef.setSelectedSampleGroupIndex(selectedIndex);
         sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
         refreshSampleSpecificControls();
     };
     addAndMakeVisible(sampleGroupSelector);
 
+    for (const auto& definition : PluginParameters::sampleSpecificParameters)
+        if (auto* parameter = processorRef.parameters.getParameter(definition.id))
+        {
+            sampleSpecificEditBindings.push_back(SampleSpecificEditBinding { parameter });
+            parameter->addListener(this);
+        }
+
     refreshSampleSpecificControls();
+    refreshApplyToAllButton();
     startTimerHz(30);
 }
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
     stopTimer();
+    for (const auto& binding : sampleSpecificEditBindings)
+        binding.parameter->removeListener(this);
     sampleGroupSelector.onSelectedIndexChanged = {};
 
     // Clear L&F pointers before destroying the owned look and feel.
     rzhavSlider.setLookAndFeel(nullptr);
     sustainSlider.setLookAndFeel(nullptr);
+    sampleGainSlider.setLookAndFeel(nullptr);
     samplePunchSlider.setLookAndFeel(nullptr);
     samplePitchSlider.setLookAndFeel(nullptr);
     warpButton.setLookAndFeel(nullptr);
@@ -124,20 +181,13 @@ void AudioPluginAudioProcessorEditor::bindSliderToParameter(
 
     sampleSpecificSliderBindings.push_back(SampleSpecificSliderBinding { &slider, parameterId });
 
-    auto* sliderPtr = &slider;
-    slider.onValueChange = [this, sliderPtr, parameterId]
-    {
-        if (refreshingSampleSpecificControls)
-            return;
-
-        processorRef.setSampleSpecificParameterValue(parameterId, static_cast<float>(sliderPtr->getValue()));
-    };
+    // Processor listeners mirror values even when this editor is closed.
 }
 
 void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
 {
-    refreshingSampleSpecificControls = true;
-
+    const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
+    displayedSampleGroupIndex = processorRef.getSelectedSampleGroupIndex();
     for (const auto& binding : sampleSpecificSliderBindings)
     {
         if (binding.slider == nullptr)
@@ -148,7 +198,82 @@ void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
         binding.slider->setValue(sampleValue, juce::sendNotificationSync);
     }
 
-    refreshingSampleSpecificControls = false;
+    samplePitchModeButton.setToggleState(processorRef.getSampleSpecificParameterValue(
+        PluginParameters::samplePitchPreserveLengthId, 0.0f) >= 0.5f, juce::sendNotificationSync);
+    refreshPitchModeStatus();
+}
+
+void AudioPluginAudioProcessorEditor::parameterGestureChanged(int parameterIndex, bool gestureIsStarting)
+{
+    // Host callbacks may run on audio. Edit tracking and UI updates stay on the
+    // message thread; ordinary automation/selection updates have no UI gesture.
+    if (juce::Thread::getCurrentThreadId() != editorThreadId || ignoreSampleSpecificEdits)
+        return;
+
+    for (auto& binding : sampleSpecificEditBindings)
+        if (binding.parameter->getParameterIndex() == parameterIndex)
+        {
+            binding.gestureInProgress = gestureIsStarting;
+            binding.lastGestureValue = binding.parameter->getValue();
+            return;
+        }
+}
+
+void AudioPluginAudioProcessorEditor::parameterValueChanged(int parameterIndex, float newValue)
+{
+    if (juce::Thread::getCurrentThreadId() != editorThreadId || ignoreSampleSpecificEdits)
+        return;
+
+    if (!std::isfinite(newValue))
+        return;
+
+    for (auto& binding : sampleSpecificEditBindings)
+        if (binding.parameter->getParameterIndex() == parameterIndex)
+        {
+            if (binding.gestureInProgress && binding.lastGestureValue != newValue)
+            {
+                binding.lastGestureValue = newValue;
+                lastEditedSampleParameter = binding.parameter;
+                lastEditedSampleValue = binding.parameter->convertFrom0to1(newValue);
+                // JUCE may hold its parameter-listener lock here. Format text
+                // and update components later, in the existing editor timer.
+                applyToAllButtonNeedsRefresh = true;
+            }
+            return;
+        }
+}
+
+void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
+{
+    applyToAllButtonNeedsRefresh = false;
+    const bool canApply = lastEditedSampleParameter != nullptr && !processorRef.getSampleGroups().empty();
+    applyToAllButton.setEnabled(canApply);
+
+    juce::String description = "Edit a sample effect first";
+    if (canApply)
+    {
+        description = lastEditedSampleParameter->getName(40) + ": "
+            + lastEditedSampleParameter->getText(
+                lastEditedSampleParameter->convertTo0to1(lastEditedSampleValue), 24);
+        const auto unit = lastEditedSampleParameter->getLabel();
+        if (unit.isNotEmpty())
+            description += " " + unit;
+    }
+    applyToAllStatusLabel.setText(description, juce::dontSendNotification);
+    applyToAllButton.setTooltip(canApply ? "Apply " + description + " to all samples."
+                                       : "Change a sample-specific effect, then apply that value to all samples.");
+}
+
+void AudioPluginAudioProcessorEditor::refreshPitchModeStatus()
+{
+    const bool supported = processorRef.selectedSampleSupportsPitchMode();
+    samplePitchModeButton.setEnabled(supported);
+    samplePitchModeButton.setTooltip(supported
+        ? "On: pitch keeps the original length. Off: pitch changes playback speed and length. New hits only."
+        : "Available for one-shots. Tempo-synced samples use their existing warp mode.");
+    const auto status = processorRef.getSelectedSamplePitchStatus();
+    samplePitchStatusLabel.setText(status == OneShotPitchCache::Status::preparing ? "Preparing..."
+        : status == OneShotPitchCache::Status::failed ? "Pitch unavailable" : "", juce::dontSendNotification);
 }
 
 float AudioPluginAudioProcessorEditor::getParameterDefaultValue(const juce::String& parameterId) const
@@ -175,6 +300,15 @@ void AudioPluginAudioProcessorEditor::rebuildSampleGroupActivityMap()
 
 void AudioPluginAudioProcessorEditor::timerCallback()
 {
+    if (applyToAllButtonNeedsRefresh)
+        refreshApplyToAllButton();
+
+    if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
+    {
+        sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
+        refreshSampleSpecificControls();
+    }
+    refreshPitchModeStatus();
     for (int midiNote = 0; midiNote < AudioPluginAudioProcessor::midiNoteActivityCount; ++midiNote)
     {
         const auto noteIndex = (size_t) midiNote;
@@ -227,8 +361,13 @@ void AudioPluginAudioProcessorEditor::resized()
 
     placeKnobWithLabel(rzhavSlider, rzhavLabel, 0, 222);
     placeKnobWithLabel(sustainSlider, sustainLabel, 81, 222);
+    placeKnobWithLabel(sampleGainSlider, sampleGainLabel, getWidth() - labelWidth - 186, 222);
     placeKnobWithLabel(samplePunchSlider, samplePunchLabel, getWidth() - labelWidth - 105, 222);
     placeKnobWithLabel(samplePitchSlider, samplePitchLabel, getWidth() - labelWidth - 24, 222);
+    samplePitchModeButton.setBounds(getWidth() - 118, 168, 92, 24);
+    samplePitchStatusLabel.setBounds(getWidth() - 128, 282, 112, 18);
+    applyToAllButton.setBounds(getWidth() - 201, 320, 177, 28);
+    applyToAllStatusLabel.setBounds(getWidth() - 201, 352, 177, 18);
     warpButton.setBounds(23, 18, 170, 110);
 
     const int selectorHeight = SampleGroupSelector::getPreferredHeight();

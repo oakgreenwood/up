@@ -17,6 +17,7 @@ public:
         double activeSourceSampleRate = 48000.0;
         double currentTimeRatio = 1.0;
         bool usingWarpCache = false;
+        bool pitchPreservesLength = false;
     };
 
     struct Result
@@ -33,6 +34,7 @@ public:
                   bool loopWhileHeld,
                   juce::ADSR& adsr,
                   float velocityGain,
+                  juce::SmoothedValue<float>& sampleGain,
                   float punchAmount,
                   const SampleMetadata* punchMetadata,
                   float sustainAmount,

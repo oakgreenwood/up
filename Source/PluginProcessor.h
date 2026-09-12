@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -10,12 +11,14 @@
 #include "PercussionSynthesiser.h"
 #include "Parameters/SampleSpecificParameterState.h"
 #include "Parameters/SampleSpecificRealtimeCache.h"
+#include "Playback/OneShotPitchCache.h"
 #include "SampleLibrary/PercussionSampleLibrary.h"
 #include "Tempo/HostTempoTracker.h"
 #include "Warp/WarpCachePrewarmer.h"
 
 //==============================================================================
-class AudioPluginAudioProcessor final : public juce::AudioProcessor
+class AudioPluginAudioProcessor final : public juce::AudioProcessor,
+                                        private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     static constexpr int midiNoteActivityCount = MidiNoteActivityState::getMidiNoteCount();
@@ -62,25 +65,30 @@ public:
 
     const std::vector<PercussionSampleLibrary::SampleGroupInfo>& getSampleGroups() const noexcept;
     int getSelectedSampleGroupIndex() const noexcept;
-    void setSelectedSampleGroupIndex(int groupIndex) noexcept;
+    // Message-thread selection; synchronizes the host-visible parameters.
+    void setSelectedSampleGroupIndex(int groupIndex);
     float getMidiNoteActivityVelocity(int midiNote) const noexcept;
     uint32_t getMidiNoteActivityGeneration(int midiNote) const noexcept;
 
     float getSampleSpecificParameterValue(const juce::String& parameterId, float fallbackValue) const;
     void setSampleSpecificParameterValue(const juce::String& parameterId, float value);
+    // Message thread only; copies one effect without changing the selected group.
+    bool applySampleSpecificParameterToAll(const juce::String& parameterId, float value);
+    bool selectedSampleSupportsPitchMode() const noexcept;
+    OneShotPitchCache::Status getSelectedSamplePitchStatus() const noexcept;
 
 private:
     void addPercussionVoices();
     void updateVoiceSharedState();
     void clampSelectedSampleGroupIndex() noexcept;
-    void updateSamplePitchCacheForGroup(int groupIndex, float value) noexcept;
-    void updateSamplePunchCacheForGroup(int groupIndex, float value) noexcept;
+    void parameterChanged(const juce::String& parameterId, float value) override;
+    void synchroniseSelectedSampleParameters();
+    void storeSampleSpecificCache();
     void rebuildSampleSpecificCache();
 
     //==============================================================================
     std::atomic<bool> warpEnabledAtomic { true };
     HostTempoTracker hostTempo;
-    WarpCachePrewarmer warpCachePrewarmer;
     RzhavProcessor rzhavProcessor;
     PercussionSynthesiser sampler;
     MidiNoteActivityState midiNoteActivity;
@@ -88,6 +96,8 @@ private:
     std::atomic<int> selectedSampleGroupIndex { -1 };
     SampleSpecificParameterState sampleSpecificParameters;
     SampleSpecificRealtimeCache sampleSpecificCache;
+    std::unique_ptr<OneShotPitchCache> oneShotPitchCache;
+    std::unique_ptr<WarpCachePrewarmer> warpCachePrewarmer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessor)
 };

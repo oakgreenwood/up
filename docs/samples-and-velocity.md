@@ -64,7 +64,9 @@ Four groups use the special ranges above. Other counts use
 ## Velocity Gain
 
 Select one group and variation without crossfading. `PercussionVoice::startNote`
-computes the within-group gain ramp, applied during render as `env * velocityGain`:
+computes the within-group gain ramp. Render multiplies `env * velocityGain` by
+the independently smoothed sample-specific Gain multiplier (-10..10 dB, default
+0 dB); the velocity calculation below remains unchanged:
 
 ```cpp
 t = groupMax > groupMin

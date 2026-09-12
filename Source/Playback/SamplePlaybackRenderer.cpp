@@ -2,6 +2,8 @@
 
 #include "PunchEnvelope.h"
 
+#include <cmath>
+
 SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<float>& outputBuffer,
                                                               int startSample,
                                                               int numSamples,
@@ -11,6 +13,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
                                                               bool loopWhileHeld,
                                                               juce::ADSR& adsr,
                                                               float velocityGain,
+                                                              juce::SmoothedValue<float>& sampleGain,
                                                               float punchAmount,
                                                               const SampleMetadata* punchMetadata,
                                                               float sustainAmount,
@@ -20,11 +23,18 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
 {
     Result result;
 
+    if (numSamples <= 0)
+        return result;
+
     const int sourceNumSamples = source.getNumSamples();
     const int sourceNumChans = source.getNumChannels();
     const int outNumChans = outputBuffer.getNumChannels();
 
-    if (sourceNumSamples <= 0 || sourceNumChans <= 0)
+    if (sourceNumSamples <= 0 || sourceNumChans <= 0
+        || !std::isfinite(state.sourceSamplePosition) || state.sourceSamplePosition < 0.0
+        || !std::isfinite(state.pitchRatio) || state.pitchRatio <= 0.0
+        || !std::isfinite(state.activeSourceSampleRate) || state.activeSourceSampleRate <= 0.0
+        || !std::isfinite(playbackSampleRate) || playbackSampleRate <= 0.0)
     {
         result.finished = true;
         return result;
@@ -40,12 +50,13 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
     const double sourceFramesPerOutputSample = juce::jmax(1e-9, state.pitchRatio);
     const double unwarpedPunchTimeRatio = activeSourceSampleRate
                                         / (sourceFramesPerOutputSample * outputSampleRate);
-    const double punchTimeRatio = state.usingWarpCache ? state.currentTimeRatio
+    const double punchTimeRatio = state.pitchPreservesLength ? 1.0
+                                : state.usingWarpCache ? state.currentTimeRatio
                                                        : unwarpedPunchTimeRatio;
 
     const auto getPunchPlaybackTimeSec = [&state, activeSourceSampleRate, sourceFramesPerOutputSample, outputSampleRate]() noexcept
     {
-        if (state.usingWarpCache)
+        if (state.usingWarpCache || state.pitchPreservesLength)
             return state.sourceSamplePosition / activeSourceSampleRate;
 
         return state.sourceSamplePosition / (sourceFramesPerOutputSample * outputSampleRate);
@@ -66,20 +77,15 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
 
         if (loopWhileHeld)
         {
-            while (state.sourceSamplePosition >= (double) sourceNumSamples)
-                state.sourceSamplePosition -= (double) sourceNumSamples;
+            state.sourceSamplePosition = std::fmod(state.sourceSamplePosition, (double) sourceNumSamples);
             sustainShaper.resetPosition();
             return false;
         }
 
-        adsr.noteOff();
-        if (!adsr.isActive())
-        {
-            result.finished = true;
-            return true;
-        }
-
-        return false;
+        // There is no source left to release. Previously the exhausted branch
+        // stopped advancing ADSR, leaving one-shot voices (and caches) held forever.
+        result.finished = true;
+        return true;
     };
 
     float* out0 = (outNumChans > 0) ? outputBuffer.getWritePointer(0, startSample) : nullptr;
@@ -93,28 +99,24 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
                 break;
 
             const int pos = (int) state.sourceSamplePosition;
-            if (pos + 1 >= sourceNumSamples)
-            {
-                state.sourceSamplePosition += state.pitchRatio;
-                continue;
-            }
+            const int next = juce::jmin(pos + 1, sourceNumSamples - 1);
 
             const float frac = (float) (state.sourceSamplePosition - (double) pos);
 
             const float s1L = srcL[pos];
-            const float s2L = srcL[pos + 1];
+            const float s2L = srcL[next];
             float inL = s1L + frac * (s2L - s1L);
 
             float inR = inL;
             if (srcR != nullptr)
             {
                 const float s1R = srcR[pos];
-                const float s2R = srcR[pos + 1];
+                const float s2R = srcR[next];
                 inR = s1R + frac * (s2R - s1R);
             }
 
             const float env = adsr.getNextSample();
-            const float gain = env * velocityGain;
+            const float gain = env * velocityGain * sampleGain.getNextValue();
 
             float sampleL = inL * gain;
             float sampleR = inR * gain;
@@ -161,6 +163,8 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
             state.sourceSamplePosition += state.pitchRatio;
         }
 
+        result.finished = result.finished || (!loopWhileHeld && state.sourceSamplePosition >= sourceNumSamples)
+                                          || !adsr.isActive();
         return result;
     }
 
@@ -170,28 +174,24 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
             break;
 
         const int pos = (int) state.sourceSamplePosition;
-        if (pos + 1 >= sourceNumSamples)
-        {
-            state.sourceSamplePosition += state.pitchRatio;
-            continue;
-        }
+        const int next = juce::jmin(pos + 1, sourceNumSamples - 1);
 
         const float frac = (float) (state.sourceSamplePosition - (double) pos);
 
         const float s1L = srcL[pos];
-        const float s2L = srcL[pos + 1];
+        const float s2L = srcL[next];
         float inL = s1L + frac * (s2L - s1L);
 
         float inR = inL;
         if (srcR != nullptr)
         {
             const float s1R = srcR[pos];
-            const float s2R = srcR[pos + 1];
+            const float s2R = srcR[next];
             inR = s1R + frac * (s2R - s1R);
         }
 
         const float env = adsr.getNextSample();
-        const float gain = env * velocityGain;
+        const float gain = env * velocityGain * sampleGain.getNextValue();
 
         float sampleL = inL * gain;
         float sampleR = inR * gain;
@@ -237,5 +237,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
         state.sourceSamplePosition += state.pitchRatio;
     }
 
+    result.finished = result.finished || (!loopWhileHeld && state.sourceSamplePosition >= sourceNumSamples)
+                                      || !adsr.isActive();
     return result;
 }

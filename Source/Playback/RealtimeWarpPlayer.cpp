@@ -82,6 +82,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                                                        bool loopWhileHeld,
                                                        juce::ADSR& adsr,
                                                        float velocityGain,
+                                                       juce::SmoothedValue<float>& sampleGain,
                                                        float punchAmount,
                                                        const SampleMetadata* punchMetadata,
                                                        float sustainAmount,
@@ -219,7 +220,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
         for (int i = 0; i < toGet; ++i)
         {
             const float env = adsr.getNextSample();
-            const float gain = env * velocityGain;
+            const float gain = env * velocityGain * sampleGain.getNextValue();
 
             if (!adsr.isActive())
             {

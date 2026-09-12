@@ -1,8 +1,12 @@
 #include "SampleSpecificRealtimeCache.h"
+#include "PluginParameters.h"
 
 #include <cmath>
 
 #include <juce_core/juce_core.h>
+
+static_assert(std::atomic<float>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
 
 SampleSpecificRealtimeCache::SampleSpecificRealtimeCache()
 {
@@ -11,11 +15,21 @@ SampleSpecificRealtimeCache::SampleSpecificRealtimeCache()
 
 void SampleSpecificRealtimeCache::reset() noexcept
 {
+    for (auto& gainDb : gainDbByMidiNote)
+        gainDb.store(PluginParameters::sampleGainDbDefault, std::memory_order_relaxed);
+    for (auto& gainLinear : gainLinearByMidiNote)
+        gainLinear.store(1.0f, std::memory_order_relaxed);
+
     for (auto& pitchRatio : pitchRatioByMidiNote)
         pitchRatio.store(1.0f, std::memory_order_relaxed);
+    for (auto& semitones : pitchSemitonesByMidiNote)
+        semitones.store(0.0f, std::memory_order_relaxed);
 
     for (auto& punchAmount : punchAmountByMidiNote)
         punchAmount.store(0.0f, std::memory_order_relaxed);
+
+    for (auto& preserveLength : pitchPreserveLengthByMidiNote)
+        preserveLength.store(false, std::memory_order_relaxed);
 }
 
 void SampleSpecificRealtimeCache::setPitchSemitonesForMidiNote(int midiNote, float semitones) noexcept
@@ -28,6 +42,7 @@ void SampleSpecificRealtimeCache::setPitchSemitonesForMidiNote(int midiNote, flo
         return;
 
     pitchRatioByMidiNote[(size_t) midiNote].store(pitchRatio, std::memory_order_relaxed);
+    pitchSemitonesByMidiNote[(size_t) midiNote].store(semitones, std::memory_order_relaxed);
 }
 
 float SampleSpecificRealtimeCache::getPitchRatioForMidiNote(int midiNote) const noexcept
@@ -37,6 +52,24 @@ float SampleSpecificRealtimeCache::getPitchRatioForMidiNote(int midiNote) const 
 
     const float pitchRatio = pitchRatioByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed);
     return (std::isfinite(pitchRatio) && pitchRatio > 0.0f) ? pitchRatio : 1.0f;
+}
+
+float SampleSpecificRealtimeCache::getPitchSemitonesForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        ? pitchSemitonesByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed) : 0.0f;
+}
+
+void SampleSpecificRealtimeCache::setPitchPreserveLengthForMidiNote(int midiNote, bool preserve) noexcept
+{
+    if (midiNote >= 0 && midiNote < midiNoteCount)
+        pitchPreserveLengthByMidiNote[(size_t) midiNote].store(preserve, std::memory_order_relaxed);
+}
+
+bool SampleSpecificRealtimeCache::getPitchPreserveLengthForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        && pitchPreserveLengthByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed);
 }
 
 void SampleSpecificRealtimeCache::setPunchAmountForMidiNote(int midiNote, float amount) noexcept
@@ -55,4 +88,29 @@ float SampleSpecificRealtimeCache::getPunchAmountForMidiNote(int midiNote) const
 
     const float amount = punchAmountByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed);
     return std::isfinite(amount) ? juce::jlimit(0.0f, 1.0f, amount) : 0.0f;
+}
+
+void SampleSpecificRealtimeCache::setGainDbForMidiNote(int midiNote, float decibels) noexcept
+{
+    if (midiNote < 0 || midiNote >= midiNoteCount || !std::isfinite(decibels))
+        return;
+
+    decibels = juce::jlimit(PluginParameters::sampleGainDbMinimum,
+                           PluginParameters::sampleGainDbMaximum, decibels);
+    const float linear = std::pow(10.0f, decibels / 20.0f);
+    gainLinearByMidiNote[(size_t) midiNote].store(linear, std::memory_order_relaxed);
+    gainDbByMidiNote[(size_t) midiNote].store(decibels, std::memory_order_relaxed);
+}
+
+float SampleSpecificRealtimeCache::getGainDbForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        ? gainDbByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed)
+        : PluginParameters::sampleGainDbDefault;
+}
+
+float SampleSpecificRealtimeCache::getGainLinearForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        ? gainLinearByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed) : 1.0f;
 }

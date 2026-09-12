@@ -42,6 +42,7 @@ public:
                   bool loopWhileHeld,
                   juce::ADSR& adsr,
                   float velocityGain,
+                  juce::SmoothedValue<float>& sampleGain,
                   float punchAmount,
                   const SampleMetadata* punchMetadata,
                   float sustainAmount,

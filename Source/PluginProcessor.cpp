@@ -4,10 +4,12 @@
 #include "PercussionVoice.h"
 #include "SampleLibrary/PercussionSampleLibrary.h"
 
+#include <cmath>
+
 //==============================================================================
 namespace
 {
-    constexpr int percussionVoiceCount = 8;
+    constexpr int percussionVoiceCount = OneShotPitchCache::maximumVoices;
     constexpr double percussionOriginalBpm = 153.0;
 
     const juce::Identifier selectedSampleGroupIndexProperty { "selectedSampleGroupIndex" };
@@ -46,6 +48,12 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     PercussionSampleLibrary::loadEmbeddedSamples(sampler, percussionOriginalBpm, &sampleGroups);
     clampSelectedSampleGroupIndex();
     rebuildSampleSpecificCache();
+    warpCachePrewarmer = std::make_unique<WarpCachePrewarmer>(
+        sampler, sampleSpecificCache, warpEnabledAtomic, *hostTempo.getBpmAtomic());
+    oneShotPitchCache = std::make_unique<OneShotPitchCache>(sampler, sampleSpecificCache);
+    updateVoiceSharedState();
+    for (const auto& parameter : PluginParameters::sampleSpecificParameters)
+        parameters.addParameterListener(parameter.id, this);
     DBG("=== Constructor done ===");
 }
 
@@ -74,6 +82,8 @@ void AudioPluginAudioProcessor::updateVoiceSharedState()
             v->setHostBpmParam(hostTempo.getBpmAtomic());
             v->setHostBpmMovingParam(hostTempo.getMovingAtomic());
             v->setSampleSpecificCache(&sampleSpecificCache);
+            v->setOneShotPitchCache(oneShotPitchCache.get());
+            v->setWarpCachePrewarmer(warpCachePrewarmer.get());
         }
     }
 }
@@ -88,7 +98,7 @@ int AudioPluginAudioProcessor::getSelectedSampleGroupIndex() const noexcept
     return selectedSampleGroupIndex.load(std::memory_order_relaxed);
 }
 
-void AudioPluginAudioProcessor::setSelectedSampleGroupIndex(int groupIndex) noexcept
+void AudioPluginAudioProcessor::setSelectedSampleGroupIndex(int groupIndex)
 {
     if (sampleGroups.empty())
     {
@@ -100,6 +110,7 @@ void AudioPluginAudioProcessor::setSelectedSampleGroupIndex(int groupIndex) noex
                                                 static_cast<int>(sampleGroups.size()) - 1,
                                                 groupIndex),
                                    std::memory_order_relaxed);
+    synchroniseSelectedSampleParameters();
 }
 
 float AudioPluginAudioProcessor::getMidiNoteActivityVelocity(int midiNote) const noexcept
@@ -115,7 +126,8 @@ uint32_t AudioPluginAudioProcessor::getMidiNoteActivityGeneration(int midiNote) 
 float AudioPluginAudioProcessor::getSampleSpecificParameterValue(const juce::String& parameterId,
                                                                  float fallbackValue) const
 {
-    if (!PluginParameters::isSampleSpecificParameterId(parameterId))
+    const auto* definition = PluginParameters::findSampleSpecificParameter(parameterId);
+    if (definition == nullptr)
         return fallbackValue;
 
     const int groupIndex = getSelectedSampleGroupIndex();
@@ -124,13 +136,15 @@ float AudioPluginAudioProcessor::getSampleSpecificParameterValue(const juce::Str
 
     const auto& sampleGroup = sampleGroups[(size_t) groupIndex];
 
-    return sampleSpecificParameters.getValue(parameterId, sampleGroup, groupIndex, fallbackValue);
+    // Atomics are authoritative, including automation received without an editor.
+    return definition->readCache(sampleSpecificCache, sampleGroup.midiNote);
 }
 
 void AudioPluginAudioProcessor::setSampleSpecificParameterValue(const juce::String& parameterId,
                                                                 float value)
 {
-    if (!PluginParameters::isSampleSpecificParameterId(parameterId))
+    const auto* definition = PluginParameters::findSampleSpecificParameter(parameterId);
+    if (definition == nullptr || !std::isfinite(value))
         return;
 
     const int groupIndex = getSelectedSampleGroupIndex();
@@ -139,41 +153,85 @@ void AudioPluginAudioProcessor::setSampleSpecificParameterValue(const juce::Stri
 
     const auto& sampleGroup = sampleGroups[(size_t) groupIndex];
 
-    sampleSpecificParameters.setValue(parameterId, sampleGroup, groupIndex, value);
+    definition->writeCache(sampleSpecificCache, sampleGroup.midiNote, value);
+    sampleSpecificParameters.setValue(parameterId, sampleGroup, groupIndex,
+        definition->readCache(sampleSpecificCache, sampleGroup.midiNote));
+}
 
-    if (parameterId == PluginParameters::samplePitchSemitonesId)
-        updateSamplePitchCacheForGroup(groupIndex, value);
-    else if (parameterId == PluginParameters::samplePunchId)
-        updateSamplePunchCacheForGroup(groupIndex, value);
+bool AudioPluginAudioProcessor::applySampleSpecificParameterToAll(const juce::String& parameterId,
+                                                                  float value)
+{
+    const auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return false;
+
+    const auto* definition = PluginParameters::findSampleSpecificParameter(parameterId);
+    auto* parameter = parameters.getParameter(parameterId);
+    if (definition == nullptr || parameter == nullptr || sampleGroups.empty() || !std::isfinite(value))
+        return false;
+
+    const float normalisedValue = parameter->convertTo0to1(value);
+    const float sampleValue = parameter->convertFrom0to1(normalisedValue);
+    for (int groupIndex = 0; groupIndex < static_cast<int>(sampleGroups.size()); ++groupIndex)
+    {
+        const auto& group = sampleGroups[(size_t) groupIndex];
+        definition->writeCache(sampleSpecificCache, group.midiNote, sampleValue);
+        sampleSpecificParameters.setValue(parameterId, group, groupIndex,
+            definition->readCache(sampleSpecificCache, group.midiNote));
+    }
+
+    // The selected parameter may already match, but the other groups still changed.
+    if (parameter->getValue() != normalisedValue)
+    {
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost(normalisedValue);
+        parameter->endChangeGesture();
+    }
+    updateHostDisplay(juce::AudioProcessorListener::ChangeDetails{}.withNonParameterStateChanged(true));
+    return true;
+}
+
+void AudioPluginAudioProcessor::parameterChanged(const juce::String& parameterId, float value)
+{
+    // The host may call on audio: fixed lookups and atomic stores only. State-tree
+    // updates happen in UI helpers or at save time, never in this callback.
+    const int groupIndex = getSelectedSampleGroupIndex();
+    if (groupIndex < 0 || groupIndex >= static_cast<int>(sampleGroups.size()) || !std::isfinite(value))
+        return;
+
+    if (const auto* definition = PluginParameters::findSampleSpecificParameter(parameterId))
+        definition->writeCache(sampleSpecificCache, sampleGroups[(size_t) groupIndex].midiNote, value);
+}
+
+void AudioPluginAudioProcessor::synchroniseSelectedSampleParameters()
+{
+    for (const auto& definition : PluginParameters::sampleSpecificParameters)
+        if (auto* parameter = parameters.getParameter(definition.id))
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(getSampleSpecificParameterValue(
+                definition.id, parameter->convertFrom0to1(parameter->getDefaultValue()))));
+}
+
+bool AudioPluginAudioProcessor::selectedSampleSupportsPitchMode() const noexcept
+{
+    const int groupIndex = getSelectedSampleGroupIndex();
+    return oneShotPitchCache != nullptr && groupIndex >= 0 && groupIndex < (int) sampleGroups.size()
+        && oneShotPitchCache->supportsMidiNote(sampleGroups[(size_t) groupIndex].midiNote);
+}
+
+OneShotPitchCache::Status AudioPluginAudioProcessor::getSelectedSamplePitchStatus() const noexcept
+{
+    const int groupIndex = getSelectedSampleGroupIndex();
+    if (oneShotPitchCache != nullptr && groupIndex >= 0 && groupIndex < (int) sampleGroups.size())
+        return oneShotPitchCache->getStatus(sampleGroups[(size_t) groupIndex].midiNote);
+    return OneShotPitchCache::Status::ready;
 }
 
 void AudioPluginAudioProcessor::clampSelectedSampleGroupIndex() noexcept
 {
-    setSelectedSampleGroupIndex(getSelectedSampleGroupIndex());
-}
-
-void AudioPluginAudioProcessor::updateSamplePitchCacheForGroup(int groupIndex, float value) noexcept
-{
-    if (groupIndex < 0 || groupIndex >= static_cast<int>(sampleGroups.size()))
-        return;
-
-    const auto& sampleGroup = sampleGroups[(size_t) groupIndex];
-    const float limitedValue = juce::jlimit(PluginParameters::samplePitchSemitonesMinimum,
-                                           PluginParameters::samplePitchSemitonesMaximum,
-                                           value);
-    sampleSpecificCache.setPitchSemitonesForMidiNote(sampleGroup.midiNote, limitedValue);
-}
-
-void AudioPluginAudioProcessor::updateSamplePunchCacheForGroup(int groupIndex, float value) noexcept
-{
-    if (groupIndex < 0 || groupIndex >= static_cast<int>(sampleGroups.size()))
-        return;
-
-    const auto& sampleGroup = sampleGroups[(size_t) groupIndex];
-    const float limitedValue = juce::jlimit(PluginParameters::samplePunchMinimum,
-                                           PluginParameters::samplePunchMaximum,
-                                           value);
-    sampleSpecificCache.setPunchAmountForMidiNote(sampleGroup.midiNote, limitedValue);
+    const int index = sampleGroups.empty() ? -1
+        : juce::jlimit(0, (int) sampleGroups.size() - 1, getSelectedSampleGroupIndex());
+    selectedSampleGroupIndex.store(index, std::memory_order_relaxed);
 }
 
 void AudioPluginAudioProcessor::rebuildSampleSpecificCache()
@@ -183,29 +241,35 @@ void AudioPluginAudioProcessor::rebuildSampleSpecificCache()
     for (int groupIndex = 0; groupIndex < static_cast<int>(sampleGroups.size()); ++groupIndex)
     {
         const auto& sampleGroup = sampleGroups[(size_t) groupIndex];
-        const float pitchValue = sampleSpecificParameters.getValue(
-            PluginParameters::samplePitchSemitonesId,
-            sampleGroup,
-            groupIndex,
-            PluginParameters::samplePitchSemitonesDefault);
+        for (const auto& definition : PluginParameters::sampleSpecificParameters)
+            if (auto* parameter = parameters.getParameter(definition.id))
+                definition.writeCache(sampleSpecificCache, sampleGroup.midiNote,
+                    sampleSpecificParameters.getValue(definition.id, sampleGroup, groupIndex,
+                        parameter->convertFrom0to1(parameter->getDefaultValue())));
+    }
+}
 
-        const float punchValue = sampleSpecificParameters.getValue(
-            PluginParameters::samplePunchId,
-            sampleGroup,
-            groupIndex,
-            PluginParameters::samplePunchDefault);
-
-        updateSamplePitchCacheForGroup(groupIndex, pitchValue);
-        updateSamplePunchCacheForGroup(groupIndex, punchValue);
+void AudioPluginAudioProcessor::storeSampleSpecificCache()
+{
+    for (int i = 0; i < (int) sampleGroups.size(); ++i)
+    {
+        const auto& group = sampleGroups[(size_t) i];
+        for (const auto& definition : PluginParameters::sampleSpecificParameters)
+            sampleSpecificParameters.setValue(definition.id, group, i,
+                definition.readCache(sampleSpecificCache, group.midiNote));
     }
 }
 
 AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 {
+    for (const auto& parameter : PluginParameters::sampleSpecificParameters)
+        parameters.removeParameterListener(parameter.id, this);
     suspendProcessing(true);
     sampler.allNotesOff(1, false);
     sampler.clearLayerMappings();
     sampler.clearVoices();
+    oneShotPitchCache.reset();
+    warpCachePrewarmer.reset(); // Join workers before freeing immutable source sounds.
     sampler.clearSounds();
 }
 
@@ -213,6 +277,8 @@ AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 
 void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
+    if (oneShotPitchCache != nullptr)
+        oneShotPitchCache->setPlaybackSampleRate(sampleRate);
     sampler.setCurrentPlaybackSampleRate(sampleRate);
     rzhavProcessor.prepare(sampleRate);
     midiNoteActivity.reset();
@@ -261,11 +327,8 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                 std::memory_order_relaxed);
 
     const bool warpEnabledNow = warpEnabledAtomic.load(std::memory_order_relaxed);
-    if (warpCachePrewarmer.update(sampler,
-                                  warpEnabledNow,
-                                  tempo.transportRunning,
-                                  tempo.bpm,
-                                  nowSec))
+    if (warpCachePrewarmer != nullptr
+        && warpCachePrewarmer->update(warpEnabledNow, tempo.transportRunning, tempo.hostBpmAvailable))
         hostTempo.resetMotion();
 
     for (const auto metadata : midiMessages)
@@ -310,6 +373,7 @@ void AudioPluginAudioProcessor::changeProgramName(int index, const juce::String&
 
 void AudioPluginAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
+    storeSampleSpecificCache();
     auto state = parameters.copyState();
     const int selectedIndex = getSelectedSampleGroupIndex();
     state.setProperty(selectedSampleGroupIndexProperty, selectedIndex, nullptr);
@@ -351,13 +415,15 @@ void AudioPluginAudioProcessor::setStateInformation(const void* data, int sizeIn
 
             sampleSpecificParameters.restoreFromPluginState(restoredState);
             rebuildSampleSpecificCache();
+            synchroniseSelectedSampleParameters();
 
             if (warpParamRaw != nullptr)
             {
                 const bool restoredWarpEnabled = warpParamRaw->load(std::memory_order_relaxed) >= 0.5f;
                 warpEnabledAtomic.store(restoredWarpEnabled, std::memory_order_relaxed);
-                warpCachePrewarmer.syncEnabledState(restoredWarpEnabled);
             }
+            if (warpCachePrewarmer != nullptr)
+                warpCachePrewarmer->requestStartupPreparation();
         }
     }
 }

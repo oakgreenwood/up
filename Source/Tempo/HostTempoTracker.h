@@ -8,6 +8,7 @@ struct HostTempoUpdate
     bool transportRunning = false;
     double bpm = 153.0;
     bool bpmMoving = false;
+    bool hostBpmAvailable = false;
 };
 
 class HostTempoTracker

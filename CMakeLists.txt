@@ -105,6 +105,8 @@ set(SourceFiles
         Source/Warp/WarpCachePrewarmer.cpp
         Source/Playback/NoteStartDeclicker.h
         Source/Playback/NoteStartDeclicker.cpp
+        Source/Playback/OneShotPitchCache.h
+        Source/Playback/OneShotPitchCache.cpp
         Source/Playback/PunchEnvelope.h
         Source/Playback/PunchEnvelope.cpp
         Source/Playback/RealtimeWarpPlayer.h

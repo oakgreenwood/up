@@ -2,11 +2,12 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_formats/juce_audio_formats.h>
-#include <future>
+#include <functional>
 #include <memory>
-#include <mutex>
 
 #include "SampleMetadata.h"
+
+class WarpCachePrewarmer;
 
 class PercussionSound : public juce::SynthesiserSound
 {
@@ -39,6 +40,13 @@ public:
     const juce::AudioBuffer<float>& getAudioData() const noexcept { return data; }
     double getSourceSampleRate() const noexcept { return sourceSampleRate; }
     int getMidiRootNote() const noexcept { return midiRootNote; }
+    bool isOneShot() const noexcept { return !warpEnabled && (metadata == nullptr || !metadata->loop); }
+    // Assigned once before playback, when registering the background pitch cache.
+    void setOneShotPitchIndex(int index) noexcept { oneShotPitchIndex = index; }
+    int getOneShotPitchIndex() const noexcept { return oneShotPitchIndex; }
+    // Assigned once while the warp-cache worker builds its immutable inventory.
+    void setWarpCacheIndex(int index) noexcept { warpCacheIndex = index; }
+    int getWarpCacheIndex() const noexcept { return warpCacheIndex; }
     void setVelocityLayerInfo(int groupIndex,
                               int groupCount,
                               int minVelocity,
@@ -57,20 +65,14 @@ public:
     static double warpBaseBpmForHost(double originalBpm, double hostBpm) noexcept;
     static double warpTimeRatioForHost(double originalBpm, double hostBpm) noexcept;
 
-    std::shared_ptr<WarpedCache> getWarpedCache(double hostBpm) const;
-    std::shared_ptr<WarpedCache> getWarpedCache(double hostBpm, double pitchRatio) const;
-    void requestWarpedCacheBuild(double hostBpm) const;
-    void requestWarpedCacheBuild(double hostBpm, double pitchRatio) const;
-    bool isWarpCacheBuildInFlight() const;
-    void clearWarpedCache() const;
-
     // Transient metadata (used by PercussionVoice)
     std::unique_ptr<SampleMetadata> metadata = nullptr;
 
 private:
-    void collectReadyWarpCache() const;
-    void storePitchedWarpCacheLocked(std::shared_ptr<WarpedCache> cache) const;
-    std::unique_ptr<WarpedCache> renderWarpedCache(double hostBpm, double pitchRatio) const;
+    friend class WarpCachePrewarmer;
+    std::unique_ptr<WarpedCache> renderWarpedCache(
+        double hostBpm, double pitchRatio,
+        const std::function<bool()>& shouldCancel) const;
 
     juce::String name;
 
@@ -78,6 +80,8 @@ private:
 
     double sourceSampleRate = 48000.0;
     int midiRootNote = 60;
+    int oneShotPitchIndex = -1;
+    int warpCacheIndex = -1;
 
     juce::BigInteger midiNotes;
 
@@ -98,10 +102,4 @@ private:
     int velocityMin = 1;
     int velocityMax = 127;
 
-    mutable std::shared_ptr<WarpedCache> warpCache;
-    mutable std::shared_ptr<WarpedCache> pitchedWarpCache;
-    mutable std::mutex warpCacheMutex;
-    mutable double pendingWarpCacheBpm = 0.0;
-    mutable double pendingWarpCachePitchRatio = 1.0;
-    mutable std::future<std::shared_ptr<WarpedCache>> warpCacheFuture;
 };

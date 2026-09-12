@@ -4,10 +4,12 @@
 
 #include "PercussionSound.h"
 #include "Playback/NoteStartDeclicker.h"
+#include "Playback/OneShotPitchCache.h"
 #include "Playback/RealtimeWarpPlayer.h"
 #include "Playback/SamplePlaybackRenderer.h"
 #include "Playback/SustainTailShaper.h"
 #include "Parameters/SampleSpecificRealtimeCache.h"
+#include "Warp/WarpCachePrewarmer.h"
 
 // Voice that plays PercussionSound and shortens sustain tails
 // based on transient JSON metadata.
@@ -39,6 +41,8 @@ public:
     void setWarpEnabledParam(std::atomic<bool>* p) { warpEnabledParam = p; }
     void setHostBpmMovingParam(std::atomic<bool>* p) { hostBpmMovingParam = p; }
     void setSampleSpecificCache(const SampleSpecificRealtimeCache* cache) noexcept { sampleSpecificCache = cache; }
+    void setOneShotPitchCache(OneShotPitchCache* cache) noexcept { oneShotPitchCache = cache; }
+    void setWarpCachePrewarmer(WarpCachePrewarmer* cache) noexcept { warpCachePrewarmer = cache; }
 
 private:
     void beginPlayback(float velocity);
@@ -52,7 +56,7 @@ private:
                          double sourceTimeSec,
                          bool requestIfMissing,
                          bool triggerDeclick);
-    bool switchToWarpCache(std::shared_ptr<PercussionSound::WarpedCache> cache,
+    bool switchToWarpCache(WarpCachePrewarmer::Lease cache,
                            double sourceTimeSec,
                            double playbackSampleRate,
                            bool triggerDeclick);
@@ -72,6 +76,7 @@ private:
     void updateSampleRendererPitchRatio() noexcept;
     float getSustainAmount() const noexcept;
     float getCurrentSamplePunchAmount() const noexcept;
+    float getCurrentSampleGain() const noexcept;
     double getCurrentSamplePitchRatio() const noexcept;
     double getCurrentHostBpm() const noexcept;
     double getCurrentOriginalSourceTimeSec() const noexcept;
@@ -82,7 +87,8 @@ private:
     int getWarpLoopPitchDebounceSampleCount() const noexcept;
 
     PercussionSound* currentSound = nullptr;
-    std::shared_ptr<PercussionSound::WarpedCache> activeWarpCache;
+    WarpCachePrewarmer::Lease activeWarpCache;
+    OneShotPitchCache::Lease oneShotPitchLease;
     const juce::AudioBuffer<float>* activeBuffer = nullptr;
     const SampleMetadata* metadata = nullptr;
 
@@ -98,11 +104,16 @@ private:
     // Pointer to APVTS parameter for sustain shortening
     std::atomic<float>* sustainAmountParam = nullptr;
     float velocityGain = 1.0f;
+    juce::SmoothedValue<float> sampleGain { 1.0f };
     
     std::atomic<double>* hostBpmParam = nullptr;
     std::atomic<bool>* warpEnabledParam = nullptr;
     std::atomic<bool>* hostBpmMovingParam = nullptr;
     const SampleSpecificRealtimeCache* sampleSpecificCache = nullptr;
+    OneShotPitchCache* oneShotPitchCache = nullptr;
+    WarpCachePrewarmer* warpCachePrewarmer = nullptr;
+    double notePitchRatio = 1.0;
+    bool notePreservesLength = false;
 
     double appliedWarpLoopPitchRatio = 1.0;
     double pendingWarpLoopPitchRatio = 1.0;

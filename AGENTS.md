@@ -35,6 +35,10 @@ implementation facts in the relevant topic document when updating behavior.
   Avoid unnecessary architecture changes and unrelated refactors.
 - Implement in small, reviewable steps and verify the result matches the goal.
 - Don't run build or validation after every change. Do it only when asked.
+- Implement only the requested behavior and the supporting code required for it
+  to work correctly. Do not add unrequested UI elements (including status labels
+  or value displays), features, abstractions, or refactors. Leave optional
+  improvements out unless explicitly requested.
 
 ## Code Quality
 

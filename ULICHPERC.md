@@ -45,10 +45,14 @@ when behavior changes.
   velocity-layer metadata, and offline warp-cache rendering.
 - `Source/PercussionVoice.cpp`: note-start playback setup, velocity gain,
   warp playback paths, transient/sustain shaping, and per-sample rendering.
+- `Source/Playback/OneShotPitchCache.cpp`: recent-group scheduling and six-worker
+  R3 rendering of fixed-duration one-shot pitch, atomic group publication, and
+  off-audio buffer reclamation.
 - `Source/Tempo/HostTempoTracker.cpp`: host BPM/transport and BPM-motion
   tracking.
-- `Source/Warp/WarpCachePrewarmer.cpp`: warp-cache prewarm debounce, retry,
-  concurrency, and cache clearing.
+- `Source/Warp/WarpCachePrewarmer.cpp`: startup/state-restore preparation and recent
+  warp-sample tracking, background BPM/pitch caches, atomic publication, and
+  off-audio reclamation.
 - `Source/Effects/RzhavProcessor.cpp`: `Rzhavchina` bit-depth and sample-rate
   reduction effect.
 - `Source/SampleMetadata.cpp`: transient JSON lookup and parsing.
