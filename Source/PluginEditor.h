@@ -40,11 +40,13 @@ public:
     ImageKnobSlider sampleGainSlider;
     ImageKnobSlider samplePunchSlider;
     ImageKnobSlider samplePitchSlider;
+    ImageKnobSlider sampleFormantSlider;
     juce::Label rzhavLabel;
     juce::Label sustainLabel;
     juce::Label sampleGainLabel;
     juce::Label samplePunchLabel;
     juce::Label samplePitchLabel;
+    juce::Label sampleFormantLabel;
     juce::TextButton applyToAllButton { "APPLY TO ALL" };
     juce::Label applyToAllStatusLabel;
     juce::ToggleButton warpButton;
@@ -57,6 +59,7 @@ public:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sampleGainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePunchAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePitchAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sampleFormantAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> warpAttachment;
 
 private:

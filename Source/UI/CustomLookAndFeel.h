@@ -14,6 +14,7 @@ inline constexpr const char* sustainSliderId = "sustainSlider";
 inline constexpr const char* sampleGainSliderId = "sampleGainSlider";
 inline constexpr const char* samplePunchSliderId = "samplePunchSlider";
 inline constexpr const char* samplePitchSliderId = "samplePitchSlider";
+inline constexpr const char* sampleFormantSliderId = "sampleFormantSlider";
 inline constexpr const char* tempoSyncButtonId = "tempoSyncButton";
 }
 

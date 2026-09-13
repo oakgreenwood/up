@@ -93,6 +93,10 @@ set(SourceFiles
         Source/Parameters/SampleSpecificRealtimeCache.cpp
         Source/Midi/MidiNoteActivityState.h
         Source/Midi/MidiNoteActivityState.cpp
+        Source/Effects/PsolaFormantShifter.h
+        Source/Effects/PsolaFormantShifter.cpp
+        Source/Effects/FormantShifter.h
+        Source/Effects/FormantShifter.cpp
         Source/Effects/RzhavProcessor.h
         Source/Effects/RzhavProcessor.cpp
         Source/SampleLibrary/SampleNameParser.h

@@ -19,6 +19,8 @@ APVTS parameters are serialized with `parameters.copyState()` and restored with
 | `samplePitchSemitones` | `Pitch` | float `-8..8` semitones | `0` | Sample-specific pitch offset for the selected sample group |
 | `samplePitchPreserveLength` | `Pitch keep length` | bool | `false` | Inert legacy host parameter; no playback effect |
 | `sampleGainDb` | `Gain` | float `-10..10` dB | `0` | Sample-specific volume, smoothed over 10 ms |
+| `sampleFormantSemitones` | `Unused (legacy)` | float `-12..12` semitones | `0` | Inert former LPC option; no playback effect |
+| `sampleFormant3Semitones` | `Formant` | float `-12..12` semitones | `0` | Additional formant shift using pitch-synchronous grains |
 
 ## Program Metadata
 
@@ -37,7 +39,8 @@ ValueTree child, keyed by `(noteIndex, pitchIndex)` with legacy index fallback.
 Its `ValueTree`, `CriticalSection`, string IDs, and linear scans belong only to
 UI edits and state save/restore; never read it from audio.
 
-For `samplePitchSemitones`, `samplePunch`, and `sampleGainDb`:
+For `samplePitchSemitones`, `samplePunch`, `sampleGainDb`,
+and `sampleFormant3Semitones`:
 
 - Processor helpers read/write the selected group's stored values.
 - APVTS slider/button attachments report gestures/changes for host automation
@@ -47,7 +50,8 @@ For `samplePitchSemitones`, `samplePunch`, and `sampleGainDb`:
   group's cached values; state restore does the same after rebuilding the cache.
 - `SampleSpecificRealtimeCache` is authoritative during use, indexed by the
   loaded group's MIDI note. It stores pitch semitones, the precomputed pitch
-  ratio, Punch, and Gain in dB with a precomputed linear multiplier. Voices avoid state-tree access and
+  ratio, Punch, Gain in dB with a precomputed linear multiplier, and
+  Formant semitones with a precomputed frequency ratio. Voices avoid state-tree access and
   pitch exponentiation; the ratio is computed only when the parameter changes.
 - `getStateInformation` mirrors all cached groups to `SampleSpecificParameterState`
   before writing that child into `parameters.copyState()`. Restore uses
@@ -73,12 +77,38 @@ input and clamps to -10..10 dB; conversion to linear gain occurs only on writes.
 Voices read only the linear atomic and smooth live changes, including on existing
 hits. See [the Gain realtime audit](realtime-audio-audit-gain.md).
 
+Formant is the former PSOLA Formant3 option, renamed in the editor and host.
+`PluginParameters::sampleFormantSemitonesId` intentionally retains the serialized
+ID `sampleFormant3Semitones` and its existing layout slot, so prior PSOLA values
+and host automation continue to control the surviving effect. Its range remains
+-12..12 semitones, default zero. The per-note cache rejects non-finite writes,
+clamps the range and computes `2^(semitones/12)` on writes. One ratio read drives
+both PSOLA and its following EQ/saturation stage, with 20 ms smoothing.
+
+The old LPC ID `sampleFormantSemitones` retains an inert host slot named
+`Unused (legacy)` to preserve subsequent parameter indices. It has no knob,
+realtime cache, listener or Apply to All registration. Its host value and old
+per-sample properties may round-trip in state but never affect playback. Old
+LPC values are not reinterpreted as PSOLA values. Missing PSOLA values default to
+zero. Selection, editor-closed automation, state and Apply to All now use the
+four-entry registry: Gain, Punch, Pitch, Formant.
+
+Formant 0 retains natural varispeed formants. The surviving PSOLA version keeps
+its existing post-processing: LPC envelope EQ at 95% of the original correction
+in dB, followed by asymmetric saturation with a 0..24.84% blend tied to absolute
+knob offset. This coloration remains active at nonzero Formant even when pitch
+tracking falls back to dry. The separate LPC-only effect is removed from voice
+rendering. Negative Formant adds a separate post-effect gain boost, linear in
+semitones/dB from 0 dB at zero to +3 dB at -12 semitones, smoothed over 20 ms.
+Zero/positive offsets add no boost. This derives from the existing Formant ratio
+and does not modify the sample Gain knob or add saved state. See [Formant playback](playback-warp-and-transients.md#formant).
+
 ## Apply To All
 
 `APPLY TO ALL` copies the last UI-edited sample-specific parameter and its captured
 value to every loaded sample group, including all velocity layers/variations that
 share that group's MIDI note. Other parameters and the selected group stay as they
-were. Gain, Punch, and Pitch are registered.
+were. Gain, Punch, Pitch, and Formant are registered.
 
 The editor observes APVTS change gestures for every registered parameter. Mere
 selection, control refresh, ordinary host automation, and state restore do not

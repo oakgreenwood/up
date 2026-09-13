@@ -8,7 +8,9 @@ parameter storage or realtime-cache publication.
 ## ProcessBlock
 
 Order: clear output; update BPM/transport via `HostTempoTracker`; publish the
-transport state to `WarpCachePrewarmer`; render the sampler; process effects.
+transport state to `WarpCachePrewarmer`; render the sampler (including each
+voice's PSOLA Formant followed by its LPC EQ/saturation);
+process global effects.
 The prewarmer's persistent worker performs all cache rendering and reclamation.
 
 `RzhavProcessor` implements `Rzhavchina`: true bypass at `0`; above zero, bit depth
@@ -84,11 +86,114 @@ one-shot coordinator, six-worker pool, and recent-group pitch cache are removed.
 Apply to All updates per-sample pitch atomics for subsequent hits immediately.
 
 The sample renderer handles zero blocks, renders the final source frame, and
-finishes exhausted voices immediately. Loop wrapping uses `fmod`, and invalid
-positions/rates end the voice before buffer access. Warp caches retain their
+stops reading exhausted sources immediately, then drains the voice's formant
+effects. Loop wrapping uses `fmod`, and invalid positions/rates end source
+playback before buffer access. Warp caches retain their
 separate worker, recent-five scheduling, fixed-slot publication and off-audio
 reclamation. See [the one-shot removal audit](realtime-audio-audit-oneshot-pitch-removal.md)
 for remaining plugin-wide realtime blockers.
+
+## Formant
+
+Formant is the surviving PSOLA option, previously called Formant3. The separate
+LPC-only effect and its leading DSP stage are removed. Signal order is original,
+cached or realtime-warp source -> voice gain/shaping -> PSOLA -> retained LPC
+EQ/saturation -> negative-formant makeup gain -> mix/global Rzhavchina. The knob spans -12..+12 semitones and
+keeps the former PSOLA parameter ID for state/automation compatibility; see
+[parameters and state](parameters-and-state.md).
+
+`PsolaFormantShifter` resamples pitch-mark-centred Hann grains while retaining
+their output centres at the input mark times. Grain width changes the envelope
+within a period; retaining mark spacing aims to preserve the fundamental. The
+core uses neither LPC nor FFT. It observes already varispeed/warp-pitched audio,
+so zero preserves natural varispeed formants and nonzero adds a further offset.
+There is no automatic compensation for Pitch. One ratio load per voice sub-block
+and note start drives both PSOLA and its following coloration.
+
+The stereo-linked YIN-style cumulative mean normalized difference detector uses
+a filtered analysis stream of at most 8 kHz, refreshed about every 10 ms, targeting
+roughly 60-1000 Hz monophonic material. The stronger channel supplies timing,
+with hysteresis; the same marks/windows process both original channels without
+summing opposite-polarity audio. Initial detection needs roughly 41 ms at 48 kHz.
+Missing pitch, silence or poor confidence fades new grain corrections towards
+delayed dry in the core. Its following EQ/saturation still applies at nonzero
+Formant. Ratio/confidence ramps take 20 ms; already scheduled grains finish.
+Neutral skips pitch analysis/grains while keeping detector history and dry delay.
+
+The first mark searches an amplitude extremum within one period; subsequent marks
+use bounded waveform correlation around the next predicted period (+/-20%).
+Hann grains span two input periods and resample by `2^(Formant/12)`. Overlapping
+wet-minus-dry corrections, with square-root ratio gain compensation, are added
+to delayed dry. Attempts back off by half a period, with at most one grain per
+frame. This grain algorithm is unchanged from Formant3.
+
+The supplied [PSOLA repository](https://github.com/maxrmorrison/psola) wraps Praat
+through Python/parselmouth and serves only as a reference; no Python/Praat code
+or dependency is embedded. The native core follows standard
+[pitch-mark tracking](https://fon.hum.uva.nl/praat/manual/Sound___Pitch__To_PointProcess__cc_.html),
+[pitch-synchronous overlap-add](https://www.fon.hum.uva.nl/praat/manual/overlap-add.html)
+and [YIN](https://pubmed.ncbi.nlm.nih.gov/12002874/) principles.
+
+### Retained EQ And Saturation
+
+The voice-owned `FormantShifter formantColouration` processes PSOLA output using
+the previous coloration settings. Its 512-frame FFT, 128-frame hop and periodic
+sqrt-Hann windows support a stereo-power-linked 20-order LPC envelope model below
+8 kHz (or Nyquist). Normalization, 50 Hz pre-emphasis, regularized Levinson-Durbin,
+reflection limits, 50 Hz bandwidth expansion and 4 ms envelope smoothing condition
+the model. It generates spectral gains, never a recursive audio synthesis filter.
+
+EQ uses the shifted/current log-envelope difference with 1.15x contrast, an initial
++/-24 dB bound, then 0.95 scaling before exponentiation: 95% of the original boost/
+cut in dB, capped at +/-22.8 dB. Correction fades to unity across the upper quarter
+of the model band. The EQ follows the already grain-shifted output and adds further
+coloration in the same direction; equal-and-opposite Pitch/Formant settings are
+not calibrated cancellation.
+
+After OLA, asymmetric gain-normalized `x / sqrt(1 + x*x)` saturation uses a biased,
+rationalized first-order ADAA implementation. The parallel blend is
+`0.2484 * abs(formantSemitones) / 12`, smoothed over 20 ms: zero at neutral and up
+to 24.84% at either extreme, 15% more blend than the previous 21.6%. ADAA
+reduces aliasing but does not eliminate it; its one-sample memory adds slight
+high-frequency coloration. Neutral skips spectral correction and saturation.
+
+Negative Formant also adds post-saturation makeup gain, independent of the
+sample Gain knob: `boostDb = 3 * clamp(-formantSemitones / 12, 0, 1)`.
+Thus -6 semitones adds +1.5 dB, -12 adds +3 dB, and zero/positive offsets add
+nothing. The derived amplitude target is computed only on a ratio change or
+note reset, and a voice-owned multiplicative ramp smooths live changes over
+20 ms, shared by both channels. New notes start at their target gain. The boost
+also applies when PSOLA pitch tracking falls back to dry, and returns to unity
+when Formant returns to zero or above. It does not write the Gain parameter or
+add any saved state, latency or tail memory. Finite output checks follow boosting.
+
+### Latency And Voice Lifetime
+
+With `Pmax = ceil(sampleRate / 60)`, the PSOLA core delays by `4 * Pmax + 1`
+frames and its following coloration by 512 frames, including at zero. Total
+host-reported latency is `512 + 4 * Pmax + 1`: 3713 frames (77.35 ms) at 48 kHz,
+or 3453 frames (78.30 ms) at 44.1 kHz. Removing the separate LPC option removes
+512 frames from the previous total. Live monitoring still incurs this delay.
+
+The core drains its latency plus `3 * Pmax + 2` frames; coloration adds 1024 drain
+frames, for 6627 total at 48 kHz. Source exhaustion/ADSR completion starts this
+zero-input drain before releasing the voice/cache lease. Hard stops and stealing
+discard pending output; new notes reset both stages. Preparation stops voices
+before preparing sample-rate-dependent storage/tables. `getTailLengthSeconds`
+reports the combined drain. Silent float bypass clears existing output storage
+for this no-input instrument, avoiding JUCE's default nonzero-latency assertion.
+
+Voice scratch remains fixed stereo/128 frames and handles variable/tiny/zero
+blocks. PSOLA rings allocate only at construction/preparation; coloration uses
+prepared FFT plans and fixed arrays. The later coloration refinement sets EQ to 95%, raises saturation blend by 15%,
+and adds negative-formant makeup gain. No build or listening test was run for
+that refinement.
+
+This remains an experimental character effect: noise, chords, short hits and
+out-of-range fundamentals can mistrack or receive mostly EQ/saturation. Grain
+interpolation and irregular marks may alias, smear attacks, or change level.
+See [the current realtime audit](realtime-audio-audit-psola-only.md) for ownership,
+performance limits and existing plugin-wide blockers.
 
 ## Pitch-Aware Warp Caches
 

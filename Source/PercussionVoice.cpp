@@ -67,10 +67,63 @@ void PercussionVoice::controllerMoved(int, int) {}
 
 void PercussionVoice::prepareRealtimeWarpResources(double playbackSampleRate, int samplesPerBlock)
 {
+    adsr.reset();
+    clearActivePlayback();
+    formantShifter.prepare(playbackSampleRate);
+    formantColouration.prepare(playbackSampleRate);
+    formantDrainSamples = FormantShifter::tailSamples
+                          + PsolaFormantShifter::tailForSampleRate(playbackSampleRate);
     realtimeWarpPlayer.prepare(playbackSampleRate, 2, samplesPerBlock);
 }
 
 void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
+                                      int startSample,
+                                      int numSamples)
+{
+    if (currentSound == nullptr || numSamples <= 0)
+        return;
+
+    const float formantRatio = getCurrentFormantRatio();
+    formantShifter.setRatio(formantRatio);
+    formantColouration.setRatio(formantRatio);
+    int rendered = 0;
+    while (rendered < numSamples && currentSound != nullptr)
+    {
+        const bool draining = sourceFinished;
+        const int count = juce::jmin(FormantShifter::hopSize, numSamples - rendered,
+                                    draining ? formantTailRemaining : FormantShifter::hopSize);
+        voiceScratch.clear();
+        if (!draining)
+            renderSourceBlock(voiceScratch, 0, count);
+
+        auto* left = voiceScratch.getWritePointer(0);
+        auto* right = voiceScratch.getWritePointer(1);
+        for (int i = 0; i < count; ++i)
+        {
+            formantShifter.process(left[i], right[i]);
+            // Retain the PSOLA option's EQ and saturation coloration.
+            formantColouration.process(left[i], right[i]);
+            for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)
+                outputBuffer.addSample(ch, startSample + rendered + i,
+                    ch == 0 ? left[i] : (ch == 1 ? right[i] : 0.5f * (left[i] + right[i])));
+        }
+        rendered += count;
+        if (draining)
+        {
+            formantTailRemaining -= count;
+            if (formantTailRemaining <= 0)
+                clearActivePlayback();
+        }
+    }
+}
+
+void PercussionVoice::finishSourcePlayback() noexcept
+{
+    sourceFinished = true;
+    formantTailRemaining = formantDrainSamples;
+}
+
+void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
                                       int startSample,
                                       int numSamples)
 {
@@ -96,7 +149,7 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
 
     if (sourceNumSamples <= 0 || sourceNumChans <= 0 || !adsr.isActive())
     {
-        clearActivePlayback();
+        finishSourcePlayback();
         return;
     }
 
@@ -130,7 +183,7 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
                                                       noteStartDeclicker);
 
         if (result.finished)
-            clearActivePlayback();
+            finishSourcePlayback();
 
         return;
     }
@@ -155,11 +208,16 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
                                              noteStartDeclicker);
 
     if (result.finished)
-        clearActivePlayback();
+        finishSourcePlayback();
 }
 
 void PercussionVoice::beginPlayback(float velocity)
 {
+    sourceFinished = false;
+    formantTailRemaining = 0;
+    const float formantRatio = getCurrentFormantRatio();
+    formantShifter.reset(formantRatio);
+    formantColouration.reset(formantRatio);
     activeWarpCache.reset();
     activeBuffer = nullptr;
     metadata = nullptr;
@@ -284,6 +342,8 @@ void PercussionVoice::beginPlayback(float velocity)
 
 void PercussionVoice::clearActivePlayback()
 {
+    sourceFinished = false;
+    formantTailRemaining = 0;
     clearCurrentNote();
 
     currentSound = nullptr;
@@ -652,6 +712,12 @@ float PercussionVoice::getSustainAmount() const noexcept
                            ? sustainAmountParam->load(std::memory_order_relaxed)
                            : 0.0f;
     return std::isfinite(amount) ? juce::jlimit(0.0f, 1.0f, amount) : 0.0f;
+}
+
+float PercussionVoice::getCurrentFormantRatio() const noexcept
+{
+    return sampleSpecificCache != nullptr && currentSound != nullptr
+        ? sampleSpecificCache->getFormantRatioForMidiNote(currentSound->getMidiRootNote()) : 1.0f;
 }
 
 float PercussionVoice::getCurrentSampleGain() const noexcept

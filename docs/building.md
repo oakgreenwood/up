@@ -11,6 +11,10 @@ Check current scripts and target settings before running commands.
   other platforms `VST3`, `Standalone`.
 - JUCE: CPM fetch at the tag pinned in `CMakeLists.txt`.
 - RubberBand: `external/rubberband/single/RubberBandSingle.cpp`.
+- The retained Formant EQ/saturation and PSOLA core compile from `Source/Effects/FormantShifter.*` and
+  `Source/Effects/PsolaFormantShifter.*` in the existing target. The native C++
+  PSOLA implementation needs no Python, Praat or additional dependency and uses
+  the same sources on macOS arm64/x86_64/universal and Windows.
 - macOS defaults to universal `arm64;x86_64` unless overridden.
 
 ## Build Command

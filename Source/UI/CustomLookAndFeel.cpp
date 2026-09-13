@@ -50,7 +50,7 @@ PluginUI::RotarySliderRendererConfig makeSampleGainSliderConfig()
 
 CustomLookAndFeel::CustomLookAndFeel()
 {
-    rotarySliders.reserve(5);
+    rotarySliders.reserve(6);
     rotarySliders.push_back(RotarySliderEntry {
         PluginUI::rzhavSliderId,
         PluginUI::RotarySliderRenderer(makeRzhavSliderConfig())
@@ -69,6 +69,10 @@ CustomLookAndFeel::CustomLookAndFeel()
     });
     rotarySliders.push_back(RotarySliderEntry {
         PluginUI::samplePitchSliderId,
+        PluginUI::RotarySliderRenderer(makeSamplePitchSliderConfig())
+    });
+    rotarySliders.push_back(RotarySliderEntry {
+        PluginUI::sampleFormantSliderId,
         PluginUI::RotarySliderRenderer(makeSamplePitchSliderConfig())
     });
 }

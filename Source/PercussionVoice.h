@@ -3,6 +3,8 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "PercussionSound.h"
+#include "Effects/FormantShifter.h"
+#include "Effects/PsolaFormantShifter.h"
 #include "Playback/NoteStartDeclicker.h"
 #include "Playback/RealtimeWarpPlayer.h"
 #include "Playback/SamplePlaybackRenderer.h"
@@ -43,6 +45,8 @@ public:
     void setWarpCachePrewarmer(WarpCachePrewarmer* cache) noexcept { warpCachePrewarmer = cache; }
 
 private:
+    void renderSourceBlock(juce::AudioBuffer<float>&, int startSample, int numSamples);
+    void finishSourcePlayback() noexcept;
     void beginPlayback(float velocity);
     void clearActivePlayback();
     void resetWarpFlags();
@@ -75,6 +79,7 @@ private:
     float getSustainAmount() const noexcept;
     float getCurrentSamplePunchAmount() const noexcept;
     float getCurrentSampleGain() const noexcept;
+    float getCurrentFormantRatio() const noexcept;
     double getCurrentSamplePitchRatio() const noexcept;
     double getCurrentHostBpm() const noexcept;
     double getCurrentOriginalSourceTimeSec() const noexcept;
@@ -94,6 +99,13 @@ private:
     RealtimeWarpPlayer realtimeWarpPlayer;
     SustainTailShaper sustainShaper;
     NoteStartDeclicker noteStartDeclicker;
+    PsolaFormantShifter formantShifter;
+    FormantShifter formantColouration;
+    int formantDrainSamples = FormantShifter::tailSamples
+                              + PsolaFormantShifter::tailForSampleRate(44100.0);
+    juce::AudioBuffer<float> voiceScratch { 2, FormantShifter::hopSize };
+    bool sourceFinished = false;
+    int formantTailRemaining = 0;
 
     // Simple ADSR for amplitude (attack/release from PercussionSound)
     juce::ADSR adsr;

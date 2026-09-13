@@ -17,6 +17,9 @@ public:
     float getPitchSemitonesForMidiNote(int midiNote) const noexcept;
     void setPunchAmountForMidiNote(int midiNote, float amount) noexcept;
     float getPunchAmountForMidiNote(int midiNote) const noexcept;
+    void setFormantSemitonesForMidiNote(int midiNote, float semitones) noexcept;
+    float getFormantSemitonesForMidiNote(int midiNote) const noexcept;
+    float getFormantRatioForMidiNote(int midiNote) const noexcept;
 
 private:
     static constexpr int midiNoteCount = 128;
@@ -26,4 +29,6 @@ private:
     std::array<std::atomic<float>, midiNoteCount> pitchRatioByMidiNote;
     std::array<std::atomic<float>, midiNoteCount> pitchSemitonesByMidiNote;
     std::array<std::atomic<float>, midiNoteCount> punchAmountByMidiNote;
+    std::array<std::atomic<float>, midiNoteCount> formantSemitonesByMidiNote;
+    std::array<std::atomic<float>, midiNoteCount> formantRatioByMidiNote;
 };

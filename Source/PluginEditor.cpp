@@ -87,6 +87,18 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible(samplePitchLabel);
     configureKnobLabel(samplePitchLabel, "Pitch");
 
+    addAndMakeVisible(sampleFormantSlider);
+    sampleFormantSlider.setComponentID(PluginUI::sampleFormantSliderId);
+    sampleFormantSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+    sampleFormantSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    sampleFormantSlider.setLookAndFeel(customLNF.get());
+    sampleFormantSlider.setDoubleClickReturnValue(true, PluginParameters::sampleFormantSemitonesDefault);
+    sampleFormantSlider.setMouseDragSensitivity(150);
+    bindSliderToParameter(sampleFormantSlider, PluginParameters::sampleFormantSemitonesId, sampleFormantAttachment);
+
+    addAndMakeVisible(sampleFormantLabel);
+    configureKnobLabel(sampleFormantLabel, "Formant");
+
     addAndMakeVisible(applyToAllButton);
     applyToAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
     applyToAllButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
@@ -149,6 +161,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     sampleGainSlider.setLookAndFeel(nullptr);
     samplePunchSlider.setLookAndFeel(nullptr);
     samplePitchSlider.setLookAndFeel(nullptr);
+    sampleFormantSlider.setLookAndFeel(nullptr);
     warpButton.setLookAndFeel(nullptr);
     customLNF.reset();
 }
@@ -331,9 +344,10 @@ void AudioPluginAudioProcessorEditor::resized()
 
     placeKnobWithLabel(rzhavSlider, rzhavLabel, 0, 222);
     placeKnobWithLabel(sustainSlider, sustainLabel, 81, 222);
-    placeKnobWithLabel(sampleGainSlider, sampleGainLabel, getWidth() - labelWidth - 186, 222);
-    placeKnobWithLabel(samplePunchSlider, samplePunchLabel, getWidth() - labelWidth - 105, 222);
-    placeKnobWithLabel(samplePitchSlider, samplePitchLabel, getWidth() - labelWidth - 24, 222);
+    placeKnobWithLabel(sampleGainSlider, sampleGainLabel, getWidth() - labelWidth - 267, 222);
+    placeKnobWithLabel(samplePunchSlider, samplePunchLabel, getWidth() - labelWidth - 186, 222);
+    placeKnobWithLabel(samplePitchSlider, samplePitchLabel, getWidth() - labelWidth - 105, 222);
+    placeKnobWithLabel(sampleFormantSlider, sampleFormantLabel, getWidth() - labelWidth - 24, 222);
     applyToAllButton.setBounds(getWidth() - 201, 320, 177, 28);
     applyToAllStatusLabel.setBounds(getWidth() - 201, 352, 177, 18);
     warpButton.setBounds(23, 18, 170, 110);

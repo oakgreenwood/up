@@ -259,6 +259,7 @@ AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 
 void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
+    setLatencySamples(FormantShifter::latencySamples + PsolaFormantShifter::latencyForSampleRate(sampleRate));
     sampler.setCurrentPlaybackSampleRate(sampleRate);
     rzhavProcessor.prepare(sampleRate);
     midiNoteActivity.reset();
@@ -325,6 +326,14 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
 //==============================================================================
 
+void AudioPluginAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer,
+                                                    juce::MidiBuffer&)
+{
+    // This instrument has no input to delay/pass through. Keep bypass silent
+    // without JUCE's default assertion that a bypassed processor has zero latency.
+    buffer.clear();
+}
+
 bool AudioPluginAudioProcessor::hasEditor() const { return true; }
 juce::AudioProcessorEditor* AudioPluginAudioProcessor::createEditor()
 {
@@ -338,7 +347,14 @@ const juce::String AudioPluginAudioProcessor::getName() const { return JucePlugi
 bool AudioPluginAudioProcessor::acceptsMidi() const { return true; }
 bool AudioPluginAudioProcessor::producesMidi() const { return false; }
 bool AudioPluginAudioProcessor::isMidiEffect() const { return false; }
-double AudioPluginAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+double AudioPluginAudioProcessor::getTailLengthSeconds() const
+{
+    const double hostRate = getSampleRate();
+    const double rate = std::isfinite(hostRate) && hostRate >= 1000.0 && hostRate <= 768000.0
+        ? hostRate : 44100.0;
+    return (double) (FormantShifter::tailSamples + PsolaFormantShifter::tailForSampleRate(rate))
+           / rate;
+}
 
 int AudioPluginAudioProcessor::getNumPrograms() { return 1; }
 int AudioPluginAudioProcessor::getCurrentProgram() { return 0; }

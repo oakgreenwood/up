@@ -50,6 +50,12 @@ when behavior changes.
 - `Source/Warp/WarpCachePrewarmer.cpp`: startup/state-restore preparation and recent
   warp-sample tracking, background BPM/pitch caches, atomic publication, and
   off-audio reclamation.
+- `Source/Effects/FormantShifter.cpp`: retained LPC EQ and saturation coloration
+  after PSOLA, with fixed latency and preallocated FFT/ring storage. There is
+  no independent LPC-only control or leading LPC stage.
+- `Source/Effects/PsolaFormantShifter.cpp`: per-voice Formant processing using
+  pitch detection, pitch-mark tracking and resampled TD-PSOLA grains, with
+  prepared delay/correction rings and a dry fallback for unpitched material.
 - `Source/Effects/RzhavProcessor.cpp`: `Rzhavchina` bit-depth and sample-rate
   reduction effect.
 - `Source/SampleMetadata.cpp`: transient JSON lookup and parsing.

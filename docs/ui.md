@@ -35,6 +35,18 @@ affecting new hits only. The Keep length button and pitch-preparation status
 label are removed. Warp-enabled samples retain their existing tempo/pitch processing and
 background caching.
 
+## Formant
+
+The single Formant knob sits immediately right of Pitch; the sample-effect row
+is Gain, Punch, Pitch, Formant. It is the former PSOLA Formant3 option, retaining
+its EQ/saturation coloration, -12..+12 semitone range, zero default and double-click
+reset. Its APVTS attachment supports selection refresh, automation, state and
+Apply to All. The separate LPC knob is removed. Host display and captured edit
+labels also say Formant; the underlying PSOLA parameter ID is preserved for
+saved values and automation. At zero, natural varispeed formants remain.
+See [playback](playback-warp-and-transients.md#formant) for tracking/latency limits
+and [state](parameters-and-state.md) for the inert former LPC host slot.
+
 ## Sample Group Selector
 
 The bottom `SampleGroupSelector` runs only on the message thread. Each item is

@@ -14,6 +14,10 @@ SampleSpecificRealtimeCache::SampleSpecificRealtimeCache()
 
 void SampleSpecificRealtimeCache::reset() noexcept
 {
+    for (auto& semitones : formantSemitonesByMidiNote)
+        semitones.store(PluginParameters::sampleFormantSemitonesDefault, std::memory_order_relaxed);
+    for (auto& ratio : formantRatioByMidiNote)
+        ratio.store(1.0f, std::memory_order_relaxed);
     for (auto& gainDb : gainDbByMidiNote)
         gainDb.store(PluginParameters::sampleGainDbDefault, std::memory_order_relaxed);
     for (auto& gainLinear : gainLinearByMidiNote)
@@ -26,6 +30,29 @@ void SampleSpecificRealtimeCache::reset() noexcept
 
     for (auto& punchAmount : punchAmountByMidiNote)
         punchAmount.store(0.0f, std::memory_order_relaxed);
+}
+
+void SampleSpecificRealtimeCache::setFormantSemitonesForMidiNote(int midiNote, float semitones) noexcept
+{
+    if (midiNote < 0 || midiNote >= midiNoteCount || !std::isfinite(semitones))
+        return;
+
+    semitones = juce::jlimit(PluginParameters::sampleFormantSemitonesMinimum,
+                            PluginParameters::sampleFormantSemitonesMaximum, semitones);
+    formantRatioByMidiNote[(size_t) midiNote].store(std::exp2(semitones / 12.0f), std::memory_order_relaxed);
+    formantSemitonesByMidiNote[(size_t) midiNote].store(semitones, std::memory_order_relaxed);
+}
+
+float SampleSpecificRealtimeCache::getFormantSemitonesForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        ? formantSemitonesByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed) : 0.0f;
+}
+
+float SampleSpecificRealtimeCache::getFormantRatioForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        ? formantRatioByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed) : 1.0f;
 }
 
 void SampleSpecificRealtimeCache::setPitchSemitonesForMidiNote(int midiNote, float semitones) noexcept

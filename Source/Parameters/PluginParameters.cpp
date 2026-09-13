@@ -3,7 +3,7 @@
 
 namespace PluginParameters
 {
-    const std::array<SampleSpecificParameter, 3> sampleSpecificParameters {{
+    const std::array<SampleSpecificParameter, 4> sampleSpecificParameters {{
         { samplePunchId,
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getPunchAmountForMidiNote(note); },
@@ -21,7 +21,12 @@ namespace PluginParameters
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getGainDbForMidiNote(note); },
           [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
-          { cache.setGainDbForMidiNote(note, value); } }
+          { cache.setGainDbForMidiNote(note, value); } },
+        { sampleFormantSemitonesId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getFormantSemitonesForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setFormantSemitonesForMidiNote(note, value); } }
     }};
 
     const SampleSpecificParameter* findSampleSpecificParameter(const juce::String& parameterId) noexcept
@@ -77,7 +82,21 @@ namespace PluginParameters
                        "Gain",
                        juce::NormalisableRange<float>(sampleGainDbMinimum, sampleGainDbMaximum),
                        sampleGainDbDefault,
-                       juce::AudioParameterFloatAttributes().withLabel("dB")));
+                       juce::AudioParameterFloatAttributes().withLabel("dB")),
+                   std::make_unique<juce::AudioParameterFloat>(
+                       legacyLpcFormantSemitonesId,
+                       "Unused (legacy)",
+                       juce::NormalisableRange<float>(sampleFormantSemitonesMinimum,
+                                                       sampleFormantSemitonesMaximum),
+                       sampleFormantSemitonesDefault,
+                       juce::AudioParameterFloatAttributes().withLabel("st")),
+                   std::make_unique<juce::AudioParameterFloat>(
+                       sampleFormantSemitonesId,
+                       "Formant",
+                       juce::NormalisableRange<float>(sampleFormantSemitonesMinimum,
+                                                       sampleFormantSemitonesMaximum),
+                       sampleFormantSemitonesDefault,
+                       juce::AudioParameterFloatAttributes().withLabel("st")));
 
         return layout;
     }
