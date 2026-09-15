@@ -9,7 +9,7 @@ parameter storage or realtime-cache publication.
 
 Order: clear output; update BPM/transport via `HostTempoTracker`; publish the
 transport state to `WarpCachePrewarmer`; render the sampler (including each
-voice's PSOLA Formant followed by its LPC EQ/saturation);
+voice's PSOLA Formant followed by its LPC EQ/saturation, Mono and Panorama);
 process global effects.
 The prewarmer's persistent worker performs all cache rendering and reclamation.
 
@@ -19,8 +19,8 @@ to host sample rate.
 
 No file I/O, logging, UI calls, allocations, or avoidable locks. Never access
 `SampleGroupSelector` or `SampleSpecificParameterState` here; use prepared
-realtime caches. Feed UI activity through fixed atomics (`MidiNoteActivityState`)
-polled by the editor on the message thread.
+realtime caches. Feed UI activity and the latest note-on selection through fixed
+atomics (`MidiNoteActivityState`) polled by the editor on the message thread.
 
 ## Metadata And Tempo
 
@@ -55,7 +55,83 @@ notes follow changes with a 10 ms linear-amplitude ramp. A voice-owned
 `juce::SmoothedValue<float>` advances once per rendered frame, shared across
 channels and retained across original/cached/realtime-warp playback switches.
 The audio path reads a precomputed linear atomic once per voice sub-block; it
-never reads the stored dB value or performs gain exponentiation per frame.
+never reads the stored dB value or performs gain exponentiation per frame. The
+parameter range is -20..+20 dB in 0.1 dB steps.
+
+## Sample Mono
+
+`sampleMonoAmount` narrows each voice after Formant, coloration and its makeup
+gain, before voice mixing/global effects. It applies to original samples,
+prepared warp caches, realtime warp output and formant tails in the same place.
+All layers/variations of a selector group share the cached amount.
+
+At 0 the blend is bypassed exactly. Above zero it computes `mid = (L + R) / 2`
+and `side = (L - R) / 2`, scaling Side by `1 - amount` and reconstructing
+`L = mid + side`, `R = mid - side`. Half-scaled terms are added/subtracted to
+avoid overflowing the intermediate unscaled sum/difference. At 100% both outputs
+contain the same mid signal; already-mono audio stays mono. This is conventional
+summing, with no additional latency, filtering or level compensation; opposing
+channel content can cancel.
+
+New notes seed a voice-owned linear `juce::SmoothedValue<float>` from the cache.
+Existing notes follow edits over 10 ms, with one atomic target read per voice
+render call and one smoother advance per stereo frame, including the effect
+drain. Smoothing persists across source/cache switches and is reset using the
+current host sample rate at each note start. Panorama processes the result after
+this blend.
+
+See [parameters and state](parameters-and-state.md) for the 0..1 parameter,
+percentage display, validation and persistence, and
+[the Mono realtime audit](realtime-audio-audit-mono.md) for remaining blockers.
+
+## Sample Panorama
+
+`samplePan` operates after Mono and before voice mixing/global effects, including
+formant tails. It uses stereo crossfeed so content from either source channel
+can move to the chosen output. Centre is an exact bypass. On a mono output bus,
+the matrix is bypassed while its smoother still advances, preserving the existing
+single-channel output instead of silencing it when panned right.
+
+The cached -50..50 integer position maps to a voice-owned -1..1 linear smoother.
+New notes start at their group's position; changes on active notes ramp over
+10 ms. Note start resets the ramp with the current host rate (valid range
+1000..768000 Hz, otherwise 44100 Hz). The smoother advances once per stereo
+frame across original, cached and realtime-warp playback, including tails.
+
+For normalized position `p` and `g = 1 / sqrt(1 + p*p)`, the matrix is:
+
+```
+p < 0: Lout = g * (L - p*R); Rout = g * (1+p)*R
+p > 0: Lout = g * (1-p)*L;   Rout = g * (R + p*L)
+p = 0: Lout = L;             Rout = R
+```
+
+Both hard-pan endpoints sum `(L+R)/sqrt(2)` into the chosen output and zero the
+other. For dual-mono input `L=R=M`, the output powers sum to `2*M*M` at every
+position: centre remains unity on both channels, and a hard-panned mono signal
+has approximately +3 dB in its remaining channel. This compensation is a defined
+mono pan law, not a guarantee of constant power for arbitrary stereo material;
+channel correlation and cancellation still affect a stereo downmix.
+
+The normalization is recalculated only when the smoothed position changes.
+Steady pan uses scalar multiplies/adds; during movement the square-root argument
+is bounded to 1..2. Double intermediates and finite-output checks prevent extreme
+input sums from introducing non-finite output. No allocation, delay, filter,
+phase rotation, grain processing or extra tail is added.
+
+### DAW References
+
+The routing choice follows the independent-channel positioning available in
+[Ableton Split Stereo Pan](https://help.ableton.com/hc/en-us/articles/360000103324-Split-Stereo-Pan-Mode),
+[Logic Stereo Pan](https://support.apple.com/guide/logicpro/set-channel-strip-pan-or-balance-positions-lgcpbc21a438/10.7/mac/11.0),
+and [Cubase Stereo Combined Panner](https://www.steinberg.help/r/cubase-pro/15.0/en/cubase_nuendo/topics/mixconsole/mixconsole_stereo_combined_panner_c.html).
+Cubase explicitly notes that summing channels can increase volume and separately
+offers [pan-law choices](https://www.steinberg.help/r/cubase-pro/15.0/en/cubase_nuendo/topics/project_handling/project_handling_project_setup_dialog_r.html).
+These public descriptions do not specify a common sample-level matrix. The
+formula above is this plugin's own normalized crossfeed implementation, not a
+claim to reproduce any DAW's exact curve or its additional stereo-width UI.
+
+See [the Panorama realtime audit](realtime-audio-audit-panorama.md).
 
 ## Punch And Pitch
 
@@ -63,6 +139,8 @@ never reads the stored dB value or performs gain exponentiation per frame.
 the punch amount at the transient, then decays over 20 ms. Apply it to every
 metadata transient on every loop pass. Warp maps starts to
 `transientTime * timeRatio`; rise/decay durations stay fixed in playback time.
+The parameter remains `0.0..1.0` in 0.01 steps; the editor represents those
+values as `0%..100%`.
 
 One-shots (`warp=false`, `loop=false`) latch their sample-specific pitch at note
 start. Pitch changes playback speed and duration: higher pitch shortens the hit,
@@ -98,7 +176,7 @@ for remaining plugin-wide realtime blockers.
 Formant is the surviving PSOLA option, previously called Formant3. The separate
 LPC-only effect and its leading DSP stage are removed. Signal order is original,
 cached or realtime-warp source -> voice gain/shaping -> PSOLA -> retained LPC
-EQ/saturation -> negative-formant makeup gain -> mix/global Rzhavchina. The knob spans -12..+12 semitones and
+EQ/saturation -> negative-formant makeup gain -> Mono -> Panorama -> mix/global Rzhavchina. The knob spans -12..+12 semitones and
 keeps the former PSOLA parameter ID for state/automation compatibility; see
 [parameters and state](parameters-and-state.md).
 

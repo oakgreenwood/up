@@ -79,6 +79,9 @@ private:
     float getSustainAmount() const noexcept;
     float getCurrentSamplePunchAmount() const noexcept;
     float getCurrentSampleGain() const noexcept;
+    float getCurrentSampleMonoAmount() const noexcept;
+    float getCurrentSamplePan() const noexcept;
+    void applySamplePan(float& left, float& right, bool stereoOutput) noexcept;
     float getCurrentFormantRatio() const noexcept;
     double getCurrentSamplePitchRatio() const noexcept;
     double getCurrentHostBpm() const noexcept;
@@ -114,6 +117,10 @@ private:
     std::atomic<float>* sustainAmountParam = nullptr;
     float velocityGain = 1.0f;
     juce::SmoothedValue<float> sampleGain { 1.0f };
+    juce::SmoothedValue<float> sampleMonoAmount { 0.0f };
+    juce::SmoothedValue<float> samplePan { 0.0f };
+    float lastPanPosition = 0.0f;
+    double panNormalization = 1.0;
     
     std::atomic<double>* hostBpmParam = nullptr;
     std::atomic<bool>* warpEnabledParam = nullptr;

@@ -16,6 +16,8 @@ public:
     void handleMidiMessage(const juce::MidiMessage& message) noexcept;
     float getVelocityForMidiNote(int midiNote) const noexcept;
     uint32_t getGenerationForMidiNote(int midiNote) const noexcept;
+    int getLatestNoteOnMidiNote() const noexcept;
+    uint32_t getLatestNoteOnGeneration() const noexcept;
 
 private:
     static constexpr int midiNoteCount = 128;
@@ -23,4 +25,6 @@ private:
     std::array<std::atomic<float>, midiNoteCount> velocities;
     std::array<std::atomic<uint32_t>, midiNoteCount> generations;
     std::array<int, midiNoteCount> activeNoteCounts {};
+    std::atomic<int> latestNoteOnMidiNote { -1 };
+    std::atomic<uint32_t> latestNoteOnGeneration { 0 };
 };

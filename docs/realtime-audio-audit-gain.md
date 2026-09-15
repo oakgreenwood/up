@@ -14,8 +14,8 @@ Reachability inspected:
 - Voice render -> cached linear target -> sample renderer (mono/stereo) or
   realtime warp renderer -> one smoother advance per output frame, before mixing.
 - Renderer -> ADSR, PunchEnvelope, SustainTailShaper, NoteStartDeclicker.
-- Voice playback switches -> one-shot/warp cache acquisition and lease release;
-  original sound/metadata access and existing realtime Rubber Band fallback.
+- Voice playback switches -> warp cache acquisition and lease release; direct
+  one-shot source access and existing realtime Rubber Band fallback.
 - Pinned JUCE SmoothedValue reset/target/step implementation, parameter constructor,
   synth locking/dispatch, and MidiMessage allocation implementation.
 
@@ -30,7 +30,7 @@ Why it matters: Allocation/destruction and uncontrolled work can interrupt audio
 Minimal fix: Prepare engines off audio, use bounded chunks in fixed scratch
 storage, and cap feed/reset work. These pre-existing issues are outside Gain.
 
-[BLOCKER] Source/PluginProcessor.cpp:334
+[BLOCKER] Source/PluginProcessor.cpp:316
 Call path: processBlock activity dispatch / JUCE synth dispatch -> getMessage ->
 MidiMessage heap allocation and destruction for long MIDI messages.
 Issue: Existing long-message handling can allocate and free on audio.
@@ -49,15 +49,15 @@ Cross-thread ownership:
   Unchanged targets do not restart ramps. Voice reuse resets gain to the new
   group's value; playback switches retain the current ramp. No heap reclamation.
 - Registry: immutable literal IDs and capture-free function pointers. UI knobs,
-  attachments, image renderers and labels are message-thread objects. Existing
+  attachments, image renderers and editable labels are message-thread objects.
+  Input validation, formatting, and commit gestures never run on audio. Existing
   editor callbacks reject other threads before accessing mutable UI tracking.
 - Original sounds, sample inventory, and metadata remain immutable while playing,
   retained by the synth. Teardown stops voices, joins cache workers, then clears
   sounds. Gain changes neither source buffers nor metadata.
-- One-shot and warp snapshots: workers publish fixed slots with release/acquire;
-  voices pin via atomic reader counts, with at most two acquisition attempts.
-  Releases decrement counts only. Workers replace/reclaim unpinned retired slots;
-  repeated replacements never mutate pinned slots. Gain adds no cache jobs.
+- One-shots latch Pitch as a scalar and read the immutable source directly. Warp
+  workers publish fixed slots with release/acquire; voices pin via atomic reader
+  counts and releases decrement counts only. Gain adds no cache jobs.
 - APVTS and per-group ValueTree persistence remain outside render. Missing Gain
   entries restore via the registered 0 dB default. Existing JUCE synth/listener
   locks remain framework mechanisms; Gain adds no new lock or sample mutation.
@@ -69,12 +69,16 @@ Verification:
   Gain advances once per frame, independent of channel count or sub-block size.
   Zero-length voice calls return without advancing. Gain needs no scratch buffer
   and adds constant work per sample even for larger host blocks.
-- Finite values are clamped to -10..10 dB before a single conversion per write,
-  yielding about 0.316..3.162 linear gain. Invalid notes return unity; non-finite
-  writes are ignored. Neutral gain is exactly unity. New notes configure the
-  10 ms ramp using their playback rate, with a fallback for invalid rates.
+- The APVTS range is -20..20 dB in 0.1 dB steps. Finite cache writes are clamped
+  to those bounds before one conversion per write, yielding 0.1..10 linear gain.
+  Invalid notes return unity; non-finite writes are ignored. Neutral gain is
+  exactly unity. New notes configure the 10 ms ramp using their playback rate,
+  with a fallback for invalid rates.
 - Reviewed registry-driven selection refresh, save/restore, and Apply to All.
-  Parameter is appended to the layout, preserving existing parameter order.
+  The editable Gain field uses the shared signed one-decimal validator and emits
+  a slider change gesture only when a valid committed value changes the parameter.
+  Arrow edits use the same gesture path and change Gain by 0.1 dB per key press.
+  Parameter order and identity remain unchanged.
 
 Residual risks:
 - Existing warp and long-MIDI blockers prevent a plugin-wide realtime pass.

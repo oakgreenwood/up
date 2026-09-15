@@ -7,6 +7,243 @@
 
 namespace
 {
+constexpr uint32_t midiSampleSelectionDebounceMs = 500;
+
+int getArrowDirection(const juce::KeyPress& key)
+{
+    if (key.getModifiers().isAnyModifierKeyDown())
+        return 0;
+
+    if (key == juce::KeyPress::upKey || key == juce::KeyPress::rightKey)
+        return 1;
+    if (key == juce::KeyPress::downKey || key == juce::KeyPress::leftKey)
+        return -1;
+    return 0;
+}
+
+bool nudgeSliderFromArrow(juce::Slider& slider,
+                          const juce::KeyPress& key,
+                          double valueBeforeNudge)
+{
+    const int direction = getArrowDirection(key);
+    const double interval = slider.getInterval();
+    if (direction == 0 || interval <= 0.0)
+        return false;
+
+    const juce::Slider::ScopedDragNotification gesture(slider);
+    slider.setValue(valueBeforeNudge + direction * interval, juce::sendNotificationSync);
+    return true;
+}
+
+bool normaliseSignedDecimalInput(const juce::String& text,
+                                 const juce::String& displaySuffix,
+                                 juce::String& normalised)
+{
+    const bool hasDisplaySuffix = displaySuffix.isNotEmpty() && text.endsWith(displaySuffix);
+    const auto numericText = hasDisplaySuffix
+        ? text.dropLastCharacters(displaySuffix.length())
+        : text;
+
+    int index = 0;
+    if (numericText.startsWithChar('+') || numericText.startsWithChar('-'))
+        ++index;
+
+    int integerDigits = 0;
+    int decimalPoint = -1;
+
+    for (; index < numericText.length(); ++index)
+    {
+        const auto character = numericText[index];
+        if (character >= '0' && character <= '9')
+        {
+            if (decimalPoint < 0)
+                ++integerDigits;
+            continue;
+        }
+
+        if (character == '.' && decimalPoint < 0 && integerDigits > 0)
+        {
+            decimalPoint = index;
+            continue;
+        }
+
+        return false;
+    }
+
+    // Validate the entire text before dropping excess fractional digits, so a
+    // malformed paste never becomes a different, apparently valid number.
+    normalised = decimalPoint < 0
+        ? numericText
+        : numericText.substring(0, decimalPoint + 2);
+    if (hasDisplaySuffix)
+        normalised += displaySuffix;
+    return normalised.length() <= 16;
+}
+
+bool parseSignedDecimalInput(const juce::String& text,
+                             const juce::String& displaySuffix,
+                             double& parsedValue)
+{
+    juce::String normalised;
+    if (!normaliseSignedDecimalInput(text, displaySuffix, normalised))
+        return false;
+
+    if (displaySuffix.isNotEmpty() && normalised.endsWith(displaySuffix))
+        normalised = normalised.dropLastCharacters(displaySuffix.length());
+
+    if (normalised.isEmpty() || normalised == "+" || normalised == "-"
+        || normalised.endsWithChar('.'))
+        return false;
+
+    parsedValue = normalised.getDoubleValue();
+    return std::isfinite(parsedValue);
+}
+
+bool normalisePercentageInput(const juce::String& text, juce::String& normalised)
+{
+    if (text.length() > 16)
+        return false;
+
+    const bool hasSuffix = text.endsWithChar('%');
+    const auto numericText = hasSuffix ? text.dropLastCharacters(1) : text;
+
+    int percentage = 0;
+    for (int index = 0; index < numericText.length(); ++index)
+    {
+        const auto character = numericText[index];
+        if (character < '0' || character > '9')
+            return false;
+
+        // Check each digit before the accumulator can overflow on a long paste.
+        percentage = percentage * 10 + static_cast<int>(character - '0');
+        if (percentage > 100)
+            return false;
+    }
+
+    normalised = numericText + (hasSuffix ? "%" : "");
+    return true;
+}
+
+bool parsePercentageInput(const juce::String& text, double& parsedValue)
+{
+    juce::String normalised;
+    if (!normalisePercentageInput(text, normalised))
+        return false;
+
+    if (normalised.endsWithChar('%'))
+        normalised = normalised.dropLastCharacters(1);
+
+    if (normalised.isEmpty())
+        return false;
+
+    parsedValue = normalised.getDoubleValue();
+    return std::isfinite(parsedValue) && parsedValue >= 0.0 && parsedValue <= 100.0;
+}
+
+bool normalisePanoramaInput(const juce::String& text, juce::String& normalised)
+{
+    if (text.length() > 16)
+        return false;
+
+    normalised = text.toUpperCase();
+    if (normalised == "C")
+        return true;
+
+    const bool hasDirection = normalised.endsWithChar('L') || normalised.endsWithChar('R');
+    const auto numericText = hasDirection ? normalised.dropLastCharacters(1) : normalised;
+    const bool hasSign = numericText.startsWithChar('-') || numericText.startsWithChar('+');
+    if (hasDirection && hasSign)
+        return false;
+
+    int magnitude = 0;
+    for (int index = hasSign ? 1 : 0; index < numericText.length(); ++index)
+    {
+        const auto character = numericText[index];
+        if (character < '0' || character > '9')
+            return false;
+
+        magnitude = magnitude * 10 + static_cast<int>(character - '0');
+        if (magnitude > static_cast<int>(PluginParameters::samplePanMaximum))
+            return false;
+    }
+
+    // Empty text, a sign or a direction alone can occur during an edit.
+    return true;
+}
+
+bool parsePanoramaInput(const juce::String& text, double& parsedValue)
+{
+    juce::String normalised;
+    if (!normalisePanoramaInput(text, normalised))
+        return false;
+    if (normalised == "C")
+    {
+        parsedValue = 0.0;
+        return true;
+    }
+
+    const bool isLeft = normalised.endsWithChar('L');
+    if (isLeft || normalised.endsWithChar('R'))
+        normalised = normalised.dropLastCharacters(1);
+    if (normalised.isEmpty() || normalised == "-" || normalised == "+")
+        return false;
+
+    parsedValue = normalised.getDoubleValue() * (isLeft ? -1.0 : 1.0);
+    return true;
+}
+
+class NumericTextEditor final : public juce::TextEditor
+{
+public:
+    NumericTextEditor(const juce::String& name,
+                      NumericValueInput::Validation inputValidation,
+                      const juce::String& suffix,
+                      juce::Slider& controlledSlider)
+        : juce::TextEditor(name),
+          validation(inputValidation),
+          displaySuffix(suffix),
+          slider(controlledSlider) {}
+
+    void insertTextAtCaret(const juce::String& insertion) override
+    {
+        const auto currentText = getText();
+        const auto selection = getHighlightedRegion();
+        const auto candidate = currentText.replaceSection(selection.getStart(),
+                                                          selection.getLength(), insertion);
+        juce::String normalised;
+        const bool isValid = validation == NumericValueInput::Validation::percentage
+            ? normalisePercentageInput(candidate, normalised)
+            : (validation == NumericValueInput::Validation::panorama
+                ? normalisePanoramaInput(candidate, normalised)
+                : normaliseSignedDecimalInput(candidate, displaySuffix, normalised));
+        if (!isValid || normalised == currentText)
+            return;
+
+        // Keep the original selection on rejection. For accepted edits, replace
+        // the suffix through JUCE's normal insertion path to retain undo/redo.
+        const int caret = juce::jmin(selection.getStart() + insertion.length(), normalised.length());
+        setHighlightedRegion({ selection.getStart(), currentText.length() });
+        juce::TextEditor::insertTextAtCaret(normalised.substring(selection.getStart()));
+        setCaretPosition(caret);
+    }
+
+    bool keyPressed(const juce::KeyPress& key) override
+    {
+        const double valueBeforeNudge = slider.getValueFromText(getText());
+        if (!nudgeSliderFromArrow(slider, key, valueBeforeNudge))
+            return juce::TextEditor::keyPressed(key);
+
+        setText(slider.getTextFromValue(slider.getValue()), false);
+        setHighlightedRegion({ 0, getText().length() });
+        return true;
+    }
+
+private:
+    const NumericValueInput::Validation validation;
+    const juce::String displaySuffix;
+    juce::Slider& slider;
+};
+
 void configureKnobLabel(juce::Label& label, const juce::String& text)
 {
     label.setText(text, juce::dontSendNotification);
@@ -15,6 +252,173 @@ void configureKnobLabel(juce::Label& label, const juce::String& text)
     label.setFont(juce::Font(juce::FontOptions(15.0f)));
     label.setInterceptsMouseClicks(false, false);
 }
+
+void configureSignedDecimalValueInput(juce::Slider& slider, const juce::String& displaySuffix)
+{
+    // SliderAttachment replaces these functions, so configure them after binding.
+    slider.setNumDecimalPlacesToDisplay(1);
+    slider.textFromValueFunction = [displaySuffix] (double value)
+    {
+        if (std::abs(value) < 0.05)
+            value = 0.0;
+
+        return juce::String(value >= 0.0 ? "+" : "")
+            + juce::String(value, 1) + displaySuffix;
+    };
+    auto* sliderPointer = &slider;
+    slider.valueFromTextFunction = [sliderPointer, displaySuffix] (const juce::String& text)
+    {
+        double value = 0.0;
+        return parseSignedDecimalInput(text, displaySuffix, value)
+            ? value
+            : sliderPointer->getValue();
+    };
+    slider.updateText();
+}
+
+void configurePercentageValueInput(juce::Slider& slider)
+{
+    slider.setNumDecimalPlacesToDisplay(0);
+    slider.textFromValueFunction = [] (double value)
+    {
+        const double percentage = juce::jlimit(0.0, 1.0, value) * 100.0;
+        return juce::String(percentage, 0) + "%";
+    };
+    auto* sliderPointer = &slider;
+    slider.valueFromTextFunction = [sliderPointer] (const juce::String& text)
+    {
+        double percentage = 0.0;
+        return parsePercentageInput(text, percentage)
+            ? percentage / 100.0
+            : sliderPointer->getValue();
+    };
+    slider.updateText();
+}
+
+void configurePanoramaValueInput(juce::Slider& slider)
+{
+    slider.setNumDecimalPlacesToDisplay(0);
+    slider.textFromValueFunction = [] (double value)
+    {
+        const int position = juce::roundToInt(juce::jlimit(
+            static_cast<double>(PluginParameters::samplePanMinimum),
+            static_cast<double>(PluginParameters::samplePanMaximum), value));
+        return position == 0 ? juce::String("C")
+                             : juce::String(std::abs(position)) + (position < 0 ? "L" : "R");
+    };
+    auto* sliderPointer = &slider;
+    slider.valueFromTextFunction = [sliderPointer] (const juce::String& text)
+    {
+        double position = 0.0;
+        return parsePanoramaInput(text, position) ? position : sliderPointer->getValue();
+    };
+    slider.updateText();
+}
+}
+
+bool ImageKnobSlider::keyPressed(const juce::KeyPress& key)
+{
+    if (getArrowDirection(key) == 0)
+        return juce::Slider::keyPressed(key);
+
+    const juce::Slider::ScopedDragNotification gesture(*this);
+    return juce::Slider::keyPressed(key);
+}
+
+NumericValueInput::NumericValueInput(juce::Slider& controlledSlider,
+                                     const juce::String& name,
+                                     Validation inputValidation,
+                                     const juce::String& suffix)
+    : juce::Label(name, {}),
+      slider(controlledSlider),
+      validation(inputValidation),
+      displaySuffix(suffix)
+{
+    setEditable(true, true, false);
+    setJustificationType(juce::Justification::centred);
+    setFont(juce::Font(juce::FontOptions(15.0f)));
+    setColour(juce::Label::textColourId, juce::Colours::black);
+    setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    setColour(juce::Label::outlineColourId, juce::Colours::transparentBlack);
+    setKeyboardType(juce::TextInputTarget::decimalKeyboard);
+    slider.addListener(this);
+    refreshValue();
+}
+
+NumericValueInput::~NumericValueInput()
+{
+    slider.removeListener(this);
+}
+
+juce::TextEditor* NumericValueInput::createEditorComponent()
+{
+    auto editor = std::make_unique<NumericTextEditor>(getName(), validation, displaySuffix, slider);
+    editor->setFont(getFont());
+    editor->setJustification(juce::Justification::centred);
+    editor->setColour(juce::TextEditor::textColourId, juce::Colours::black);
+    editor->setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xffe6e6e6));
+    editor->setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff808080));
+    editor->setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::black);
+    editor->setColour(juce::TextEditor::highlightColourId, juce::Colours::transparentBlack);
+    editor->setColour(juce::TextEditor::highlightedTextColourId, juce::Colours::black);
+    editor->setCaretVisible(false);
+    // Label takes ownership of the editor returned by this JUCE factory hook.
+    return editor.release();
+}
+
+bool NumericValueInput::keyPressed(const juce::KeyPress& key)
+{
+    return nudgeSliderFromArrow(slider, key, slider.getValue())
+        || juce::Label::keyPressed(key);
+}
+
+void NumericValueInput::textEditorReturnKeyPressed(juce::TextEditor& editor)
+{
+    commitEdit(editor.getText());
+}
+
+void NumericValueInput::textEditorEscapeKeyPressed(juce::TextEditor&)
+{
+    discardEdit();
+}
+
+void NumericValueInput::textEditorFocusLost(juce::TextEditor& editor)
+{
+    commitEdit(editor.getText());
+}
+
+void NumericValueInput::commitEdit(const juce::String& text)
+{
+    const bool textChanged = text != getText();
+    hideEditor(true);
+    // Merely opening and closing a field must not overwrite new automation.
+    if (textChanged)
+    {
+        const double value = slider.getNormalisableRange().snapToLegalValue(slider.getValueFromText(text));
+        if (value != slider.getValue())
+        {
+            const juce::Slider::ScopedDragNotification gesture(slider);
+            slider.setValue(value, juce::sendNotificationSync);
+        }
+    }
+    refreshValue();
+}
+
+void NumericValueInput::discardEdit()
+{
+    hideEditor(true);
+    refreshValue();
+}
+
+void NumericValueInput::sliderValueChanged(juce::Slider*)
+{
+    if (!isBeingEdited())
+        refreshValue();
+}
+
+void NumericValueInput::refreshValue()
+{
+    setText(slider.getTextFromValue(slider.getValue()), juce::dontSendNotification);
 }
 
 //==============================================================================
@@ -24,6 +428,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 {
     juce::ignoreUnused (processorRef);
     setSize (900, 600);
+    setWantsKeyboardFocus(true);
 
     customLNF = std::make_unique<CustomLookAndFeel>();
 
@@ -59,6 +464,9 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleGainSlider.setDoubleClickReturnValue(true, PluginParameters::sampleGainDbDefault);
     sampleGainSlider.setMouseDragSensitivity(150);
     bindSliderToParameter(sampleGainSlider, PluginParameters::sampleGainDbId, sampleGainAttachment);
+    configureSignedDecimalValueInput(sampleGainSlider, " dB");
+    sampleGainValueInput.discardEdit();
+    addAndMakeVisible(sampleGainValueInput);
 
     addAndMakeVisible(sampleGainLabel);
     configureKnobLabel(sampleGainLabel, "Gain");
@@ -71,6 +479,9 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     samplePunchSlider.setDoubleClickReturnValue(true, PluginParameters::samplePunchDefault);
     samplePunchSlider.setMouseDragSensitivity(150);
     bindSliderToParameter(samplePunchSlider, PluginParameters::samplePunchId, samplePunchAttachment);
+    configurePercentageValueInput(samplePunchSlider);
+    samplePunchValueInput.discardEdit();
+    addAndMakeVisible(samplePunchValueInput);
 
     addAndMakeVisible(samplePunchLabel);
     configureKnobLabel(samplePunchLabel, "Punch");
@@ -83,6 +494,9 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     samplePitchSlider.setDoubleClickReturnValue(true, PluginParameters::samplePitchSemitonesDefault);
     samplePitchSlider.setMouseDragSensitivity(150);
     bindSliderToParameter(samplePitchSlider, PluginParameters::samplePitchSemitonesId, samplePitchAttachment);
+    configureSignedDecimalValueInput(samplePitchSlider, " st");
+    samplePitchValueInput.discardEdit();
+    addAndMakeVisible(samplePitchValueInput);
 
     addAndMakeVisible(samplePitchLabel);
     configureKnobLabel(samplePitchLabel, "Pitch");
@@ -95,27 +509,74 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleFormantSlider.setDoubleClickReturnValue(true, PluginParameters::sampleFormantSemitonesDefault);
     sampleFormantSlider.setMouseDragSensitivity(150);
     bindSliderToParameter(sampleFormantSlider, PluginParameters::sampleFormantSemitonesId, sampleFormantAttachment);
+    configureSignedDecimalValueInput(sampleFormantSlider, " st");
+    sampleFormantValueInput.discardEdit();
+    addAndMakeVisible(sampleFormantValueInput);
 
     addAndMakeVisible(sampleFormantLabel);
     configureKnobLabel(sampleFormantLabel, "Formant");
+
+    addAndMakeVisible(sampleMonoSlider);
+    sampleMonoSlider.setComponentID(PluginUI::sampleMonoSliderId);
+    sampleMonoSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+    sampleMonoSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    sampleMonoSlider.setLookAndFeel(customLNF.get());
+    sampleMonoSlider.setDoubleClickReturnValue(true, PluginParameters::sampleMonoAmountDefault);
+    sampleMonoSlider.setMouseDragSensitivity(150);
+    bindSliderToParameter(sampleMonoSlider, PluginParameters::sampleMonoAmountId, sampleMonoAttachment);
+    configurePercentageValueInput(sampleMonoSlider);
+    sampleMonoValueInput.discardEdit();
+    addAndMakeVisible(sampleMonoValueInput);
+
+    addAndMakeVisible(sampleMonoLabel);
+    configureKnobLabel(sampleMonoLabel, "Mono");
+
+    addAndMakeVisible(samplePanSlider);
+    samplePanSlider.setComponentID(PluginUI::samplePanSliderId);
+    samplePanSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+    samplePanSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    samplePanSlider.setLookAndFeel(customLNF.get());
+    samplePanSlider.setDoubleClickReturnValue(true, PluginParameters::samplePanDefault);
+    samplePanSlider.setMouseDragSensitivity(150);
+    bindSliderToParameter(samplePanSlider, PluginParameters::samplePanId, samplePanAttachment);
+    configurePanoramaValueInput(samplePanSlider);
+    samplePanValueInput.discardEdit();
+    addAndMakeVisible(samplePanValueInput);
+
+    addAndMakeVisible(samplePanLabel);
+    configureKnobLabel(samplePanLabel, "Panorama");
 
     addAndMakeVisible(applyToAllButton);
     applyToAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
     applyToAllButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
     applyToAllButton.onClick = [this]
     {
-        if (lastEditedSampleParameter == nullptr)
+        auto* parameter = getSelectedApplyToAllParameter();
+        if (parameter == nullptr)
             return;
 
+        const float fallbackValue = parameter->convertFrom0to1(parameter->getDefaultValue());
+        const float currentValue = processorRef.getSampleSpecificParameterValue(
+            parameter->paramID, fallbackValue);
         const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
-        if (processorRef.applySampleSpecificParameterToAll(
-                lastEditedSampleParameter->paramID, lastEditedSampleValue))
+        if (processorRef.applySampleSpecificParameterToAll(parameter->paramID, currentValue))
             refreshSampleSpecificControls();
     };
-    addAndMakeVisible(applyToAllStatusLabel);
-    configureKnobLabel(applyToAllStatusLabel, {});
-    applyToAllStatusLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
-    applyToAllStatusLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
+
+    addAndMakeVisible(applyToAllEffectSelector);
+    applyToAllEffectSelector.setName("Effect to apply to all samples");
+    applyToAllEffectSelector.setTextWhenNothingSelected("SELECT EFFECT");
+    applyToAllEffectSelector.setTooltip("Choose which sample-specific effect to apply to all samples.");
+    applyToAllEffectSelector.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
+    applyToAllEffectSelector.setColour(juce::ComboBox::textColourId, juce::Colours::black);
+    applyToAllEffectSelector.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
+    applyToAllEffectSelector.setColour(juce::ComboBox::arrowColourId, juce::Colours::black);
+    applyToAllEffectSelector.onChange = [this]
+    {
+        pendingApplyToAllParameter = nullptr;
+        refreshApplyToAllButton();
+        grabKeyboardFocus();
+    };
 
     addAndMakeVisible(warpButton);
     warpButton.setComponentID(PluginUI::tempoSyncButtonId);
@@ -129,10 +590,9 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
     sampleGroupSelector.onSelectedIndexChanged = [this] (int selectedIndex)
     {
-        const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
-        processorRef.setSelectedSampleGroupIndex(selectedIndex);
-        sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
-        refreshSampleSpecificControls();
+        midiSelectionBurstActive = false;
+        pendingMidiSampleGroupIndex = -1;
+        selectSampleGroupForEditing(selectedIndex);
     };
     addAndMakeVisible(sampleGroupSelector);
 
@@ -140,6 +600,12 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
         if (auto* parameter = processorRef.parameters.getParameter(definition.id))
         {
             sampleSpecificEditBindings.push_back(SampleSpecificEditBinding { parameter });
+            applyToAllParameters.push_back(parameter);
+            applyToAllEffectSelector.addItem(
+                parameter->getName(40), static_cast<int>(applyToAllParameters.size()));
+            if (parameter->paramID == PluginParameters::sampleGainDbId)
+                applyToAllEffectSelector.setSelectedId(
+                    static_cast<int>(applyToAllParameters.size()), juce::dontSendNotification);
             parameter->addListener(this);
         }
 
@@ -154,6 +620,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     for (const auto& binding : sampleSpecificEditBindings)
         binding.parameter->removeListener(this);
     sampleGroupSelector.onSelectedIndexChanged = {};
+    applyToAllEffectSelector.onChange = {};
 
     // Clear L&F pointers before destroying the owned look and feel.
     rzhavSlider.setLookAndFeel(nullptr);
@@ -162,6 +629,8 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     samplePunchSlider.setLookAndFeel(nullptr);
     samplePitchSlider.setLookAndFeel(nullptr);
     sampleFormantSlider.setLookAndFeel(nullptr);
+    sampleMonoSlider.setLookAndFeel(nullptr);
+    samplePanSlider.setLookAndFeel(nullptr);
     warpButton.setLookAndFeel(nullptr);
     customLNF.reset();
 }
@@ -187,6 +656,13 @@ void AudioPluginAudioProcessorEditor::bindSliderToParameter(
 void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
 {
     const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
+    // An edit for the previous sample must never be committed to a new selection.
+    sampleGainValueInput.discardEdit();
+    samplePunchValueInput.discardEdit();
+    samplePitchValueInput.discardEdit();
+    sampleFormantValueInput.discardEdit();
+    sampleMonoValueInput.discardEdit();
+    samplePanValueInput.discardEdit();
     displayedSampleGroupIndex = processorRef.getSelectedSampleGroupIndex();
     for (const auto& binding : sampleSpecificSliderBindings)
     {
@@ -229,35 +705,57 @@ void AudioPluginAudioProcessorEditor::parameterValueChanged(int parameterIndex, 
             if (binding.gestureInProgress && binding.lastGestureValue != newValue)
             {
                 binding.lastGestureValue = newValue;
-                lastEditedSampleParameter = binding.parameter;
-                lastEditedSampleValue = binding.parameter->convertFrom0to1(newValue);
-                // JUCE may hold its parameter-listener lock here. Format text
-                // and update components later, in the existing editor timer.
-                applyToAllButtonNeedsRefresh = true;
+                // JUCE may hold its parameter-listener lock here. Change the
+                // ComboBox later, in the existing editor timer.
+                pendingApplyToAllParameter = binding.parameter;
             }
+            return;
+        }
+}
+
+juce::RangedAudioParameter* AudioPluginAudioProcessorEditor::getSelectedApplyToAllParameter() const
+{
+    const int parameterIndex = applyToAllEffectSelector.getSelectedId() - 1;
+    if (parameterIndex < 0 || parameterIndex >= static_cast<int>(applyToAllParameters.size()))
+        return nullptr;
+
+    return applyToAllParameters[(size_t) parameterIndex];
+}
+
+void AudioPluginAudioProcessorEditor::selectApplyToAllEffect(juce::RangedAudioParameter& parameter)
+{
+    for (int parameterIndex = 0; parameterIndex < static_cast<int>(applyToAllParameters.size()); ++parameterIndex)
+        if (applyToAllParameters[(size_t) parameterIndex] == &parameter)
+        {
+            applyToAllEffectSelector.setSelectedId(parameterIndex + 1, juce::dontSendNotification);
+            refreshApplyToAllButton();
             return;
         }
 }
 
 void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
 {
-    applyToAllButtonNeedsRefresh = false;
-    const bool canApply = lastEditedSampleParameter != nullptr && !processorRef.getSampleGroups().empty();
+    auto* parameter = getSelectedApplyToAllParameter();
+    const bool canApply = parameter != nullptr && !processorRef.getSampleGroups().empty();
     applyToAllButton.setEnabled(canApply);
+    applyToAllButton.setTooltip(canApply
+        ? juce::String("Apply the selected sample's current ")
+            + parameter->getName(40) + " value to all samples."
+        : "Select or edit a sample-specific effect to apply it to all samples.");
+}
 
-    juce::String description = "Edit a sample effect first";
-    if (canApply)
-    {
-        description = lastEditedSampleParameter->getName(40) + ": "
-            + lastEditedSampleParameter->getText(
-                lastEditedSampleParameter->convertTo0to1(lastEditedSampleValue), 24);
-        const auto unit = lastEditedSampleParameter->getLabel();
-        if (unit.isNotEmpty())
-            description += " " + unit;
-    }
-    applyToAllStatusLabel.setText(description, juce::dontSendNotification);
-    applyToAllButton.setTooltip(canApply ? "Apply " + description + " to all samples."
-                                       : "Change a sample-specific effect, then apply that value to all samples.");
+bool AudioPluginAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
+{
+    auto* parameter = getSelectedApplyToAllParameter();
+    if (parameter == nullptr)
+        return juce::AudioProcessorEditor::keyPressed(key);
+
+    for (const auto& binding : sampleSpecificSliderBindings)
+        if (binding.slider != nullptr && binding.parameterId == parameter->paramID)
+            return nudgeSliderFromArrow(*binding.slider, key, binding.slider->getValue())
+                || juce::AudioProcessorEditor::keyPressed(key);
+
+    return juce::AudioProcessorEditor::keyPressed(key);
 }
 
 float AudioPluginAudioProcessorEditor::getParameterDefaultValue(const juce::String& parameterId) const
@@ -282,10 +780,56 @@ void AudioPluginAudioProcessorEditor::rebuildSampleGroupActivityMap()
     }
 }
 
+void AudioPluginAudioProcessorEditor::selectSampleGroupForEditing(int groupIndex)
+{
+    const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
+    if (groupIndex != processorRef.getSelectedSampleGroupIndex())
+        processorRef.setSelectedSampleGroupIndex(groupIndex);
+
+    sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
+    if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
+        refreshSampleSpecificControls();
+}
+
 void AudioPluginAudioProcessorEditor::timerCallback()
 {
-    if (applyToAllButtonNeedsRefresh)
-        refreshApplyToAllButton();
+    if (pendingApplyToAllParameter != nullptr)
+    {
+        auto* parameter = pendingApplyToAllParameter;
+        pendingApplyToAllParameter = nullptr;
+        selectApplyToAllEffect(*parameter);
+    }
+
+    const uint32_t latestNoteOnGeneration = processorRef.getLatestMidiNoteOnGeneration();
+    if (observedLatestMidiNoteOnGeneration != latestNoteOnGeneration)
+    {
+        observedLatestMidiNoteOnGeneration = latestNoteOnGeneration;
+        const int midiNote = processorRef.getLatestMidiNoteOnNote();
+        if (midiNote >= 0 && midiNote < AudioPluginAudioProcessor::midiNoteActivityCount)
+        {
+            const int groupIndex = sampleGroupIndexByMidiNote[(size_t) midiNote];
+            if (groupIndex >= 0)
+            {
+                pendingMidiSampleGroupIndex = groupIndex;
+                lastMappedMidiNoteOnTimeMs = juce::Time::getMillisecondCounter();
+                if (!midiSelectionBurstActive)
+                {
+                    midiSelectionBurstActive = true;
+                    selectSampleGroupForEditing(groupIndex);
+                }
+            }
+        }
+    }
+
+    if (midiSelectionBurstActive
+        && static_cast<uint32_t>(juce::Time::getMillisecondCounter()
+                                 - lastMappedMidiNoteOnTimeMs) >= midiSampleSelectionDebounceMs)
+    {
+        midiSelectionBurstActive = false;
+        if (pendingMidiSampleGroupIndex >= 0)
+            selectSampleGroupForEditing(pendingMidiSampleGroupIndex);
+        pendingMidiSampleGroupIndex = -1;
+    }
 
     if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
     {
@@ -323,6 +867,9 @@ void AudioPluginAudioProcessorEditor::resized()
     constexpr int labelWidth = 96;
     constexpr int labelHeight = 22;
     constexpr int labelGap = 11;
+    constexpr int valueInputHeight = 20;
+    constexpr int valueInputWidth = 76;
+    constexpr int valueLabelGap = 3;
 
     const auto placeKnobWithLabel = [=] (juce::Slider& slider,
                                          juce::Label& label,
@@ -342,14 +889,39 @@ void AudioPluginAudioProcessorEditor::resized()
                         labelHeight);
     };
 
+    const auto placeKnobWithValueAndLabel = [=] (juce::Slider& slider,
+                                                  juce::Label& label,
+                                                  NumericValueInput& input,
+                                                  int labelLeft,
+                                                  int knobCentreY)
+    {
+        placeKnobWithLabel(slider, label, labelLeft, knobCentreY);
+        input.setBounds(labelLeft + (labelWidth - valueInputWidth) / 2,
+                        label.getBottom() + valueLabelGap, valueInputWidth, valueInputHeight);
+    };
+
     placeKnobWithLabel(rzhavSlider, rzhavLabel, 0, 222);
     placeKnobWithLabel(sustainSlider, sustainLabel, 81, 222);
-    placeKnobWithLabel(sampleGainSlider, sampleGainLabel, getWidth() - labelWidth - 267, 222);
-    placeKnobWithLabel(samplePunchSlider, samplePunchLabel, getWidth() - labelWidth - 186, 222);
-    placeKnobWithLabel(samplePitchSlider, samplePitchLabel, getWidth() - labelWidth - 105, 222);
-    placeKnobWithLabel(sampleFormantSlider, sampleFormantLabel, getWidth() - labelWidth - 24, 222);
-    applyToAllButton.setBounds(getWidth() - 201, 320, 177, 28);
-    applyToAllStatusLabel.setBounds(getWidth() - 201, 352, 177, 18);
+    placeKnobWithValueAndLabel(sampleGainSlider, sampleGainLabel, sampleGainValueInput,
+                               getWidth() - labelWidth - 429, 222);
+    placeKnobWithValueAndLabel(samplePunchSlider, samplePunchLabel, samplePunchValueInput,
+                               getWidth() - labelWidth - 348, 222);
+    placeKnobWithValueAndLabel(samplePitchSlider, samplePitchLabel, samplePitchValueInput,
+                               getWidth() - labelWidth - 267, 222);
+    placeKnobWithValueAndLabel(sampleFormantSlider, sampleFormantLabel, sampleFormantValueInput,
+                               getWidth() - labelWidth - 186, 222);
+    placeKnobWithValueAndLabel(sampleMonoSlider, sampleMonoLabel, sampleMonoValueInput,
+                               getWidth() - labelWidth - 105, 222);
+    placeKnobWithValueAndLabel(samplePanSlider, samplePanLabel, samplePanValueInput,
+                               getWidth() - labelWidth - 24, 222);
+    constexpr int applyToAllWidth = 150;
+    constexpr int effectSelectorWidth = 116;
+    constexpr int applyToAllGap = 8;
+    constexpr int applyToAllRight = 24;
+    const int effectSelectorLeft = getWidth() - applyToAllRight - effectSelectorWidth;
+    applyToAllButton.setBounds(
+        effectSelectorLeft - applyToAllGap - applyToAllWidth, 320, applyToAllWidth, 28);
+    applyToAllEffectSelector.setBounds(effectSelectorLeft, 320, effectSelectorWidth, 28);
     warpButton.setBounds(23, 18, 170, 110);
 
     const int selectorHeight = SampleGroupSelector::getPreferredHeight();

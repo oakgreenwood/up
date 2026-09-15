@@ -70,6 +70,8 @@ public:
     void setSelectedSampleGroupIndex(int groupIndex);
     float getMidiNoteActivityVelocity(int midiNote) const noexcept;
     uint32_t getMidiNoteActivityGeneration(int midiNote) const noexcept;
+    int getLatestMidiNoteOnNote() const noexcept;
+    uint32_t getLatestMidiNoteOnGeneration() const noexcept;
 
     float getSampleSpecificParameterValue(const juce::String& parameterId, float fallbackValue) const;
     void setSampleSpecificParameterValue(const juce::String& parameterId, float value);

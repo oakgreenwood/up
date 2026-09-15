@@ -15,12 +15,14 @@ APVTS parameters are serialized with `parameters.copyState()` and restored with
 | `rzhavchina` | `Rzhavchina` | float `0..1` | `0` | Bit depth and sample-rate reduction in `processBlock` |
 | `sustainShorten` | `Pomyatost` | float `0..1` | `0` | Sustain/tail shortening in voices |
 | `warpEnabled` | `Tempo sync` | bool | `true` | Enables tempo-sync warp behavior |
-| `samplePunch` | `Punch` | float `0..1` | `0` | Sample-specific transient volume boost |
-| `samplePitchSemitones` | `Pitch` | float `-8..8` semitones | `0` | Sample-specific pitch offset for the selected sample group |
+| `samplePunch` | `Punch` | float `0..1`, `0.01` step | `0` | Sample-specific transient volume boost; editor displays `0%..100%` |
+| `samplePitchSemitones` | `Pitch` | float `-12..12` semitones, `0.1` step | `0` | Sample-specific pitch offset for the selected sample group |
 | `samplePitchPreserveLength` | `Pitch keep length` | bool | `false` | Inert legacy host parameter; no playback effect |
-| `sampleGainDb` | `Gain` | float `-10..10` dB | `0` | Sample-specific volume, smoothed over 10 ms |
+| `sampleGainDb` | `Gain` | float `-20..20` dB, `0.1` step | `0` | Sample-specific volume, smoothed over 10 ms |
 | `sampleFormantSemitones` | `Unused (legacy)` | float `-12..12` semitones | `0` | Inert former LPC option; no playback effect |
-| `sampleFormant3Semitones` | `Formant` | float `-12..12` semitones | `0` | Additional formant shift using pitch-synchronous grains |
+| `sampleFormant3Semitones` | `Formant` | float `-12..12` semitones, `0.1` step | `0` | Additional formant shift using pitch-synchronous grains |
+| `sampleMonoAmount` | `Mono` | float `0..1`, `0.01` step | `0` | Sample-specific stereo-to-mono blend after Formant; editor displays `0%..100%` |
+| `samplePan` | `Panorama` | float `-50..50`, `1` step | `0` | Sample-specific stereo positioning after Mono; editor displays `50L..C..50R` |
 
 ## Program Metadata
 
@@ -32,7 +34,10 @@ and renaming are no-ops; selecting this program does not reset parameter values.
 
 `AudioPluginAudioProcessor` stores the selected group index and serializes both
 that index and its stable `(noteIndex, pitchIndex)` key. Restore by key, with
-index fallback for older state.
+index fallback for older state. Clicking a selector item or playing its mapped
+MIDI note changes the same selected group, so the host-facing sample parameters
+and editor controls follow the first isolated hit immediately and the last note
+of a rapid phrase after the editor's 500 ms selection debounce.
 
 `SampleSpecificParameterState` stores per-sample values in a `sampleSpecific`
 ValueTree child, keyed by `(noteIndex, pitchIndex)` with legacy index fallback.
@@ -40,7 +45,7 @@ Its `ValueTree`, `CriticalSection`, string IDs, and linear scans belong only to
 UI edits and state save/restore; never read it from audio.
 
 For `samplePitchSemitones`, `samplePunch`, `sampleGainDb`,
-and `sampleFormant3Semitones`:
+`sampleFormant3Semitones`, `sampleMonoAmount`, and `samplePan`:
 
 - Processor helpers read/write the selected group's stored values.
 - APVTS slider/button attachments report gestures/changes for host automation
@@ -51,7 +56,8 @@ and `sampleFormant3Semitones`:
 - `SampleSpecificRealtimeCache` is authoritative during use, indexed by the
   loaded group's MIDI note. It stores pitch semitones, the precomputed pitch
   ratio, Punch, Gain in dB with a precomputed linear multiplier, and
-  Formant semitones with a precomputed frequency ratio. Voices avoid state-tree access and
+  Formant semitones with a precomputed frequency ratio, plus Mono amount and
+  Panorama position. Voices avoid state-tree access and
   pitch exponentiation; the ratio is computed only when the parameter changes.
 - `getStateInformation` mirrors all cached groups to `SampleSpecificParameterState`
   before writing that child into `parameters.copyState()`. Restore uses
@@ -72,16 +78,46 @@ name and default as an inert compatibility entry, so subsequent parameter indice
 value, but nothing reads it for playback, selection, or Apply to All. Old
 sample-specific mode properties may round-trip in the state tree but are ignored.
 
+Punch remains stored and published as `0.0..1.0`. Its editor scales the value to
+the whole percentage `0%..100%`; typed percentages divide by 100 before the
+slider/APVTS gesture. The editor rejects numeric input above 100, decimal values,
+and non-percentage characters. Cache writes reject non-finite input, clamp to the
+same range, and snap to 0.01 so
+restored per-sample values match the displayed percent.
+
+Mono uses the same percentage representation and validation as Punch: an internal
+0..1 value in 0.01 steps and whole percentages from 0% to 100% in the editor.
+Both percentage inputs reject oversized numeric pastes before integer overflow
+can bypass the range check. Mono cache writes reject non-finite values, clamp to
+0..1 and snap to 0.01. Missing Mono state defaults to zero. The host parameter is
+appended after Formant, preserving every existing host parameter index. Voices
+read one scalar atomic per voice render call and smooth live changes over 10 ms,
+including effect tails. See [Mono playback](playback-warp-and-transients.md#sample-mono)
+and [the Mono realtime audit](realtime-audio-audit-mono.md).
+
+Panorama is appended after Mono, preserving existing host parameter indices.
+Its signed -50..50 range has one-unit steps and a zero/centre default, including
+when restoring older state. Cache writes reject non-finite values, clamp to the
+range and round to an integer. Audio reads one scalar atomic per voice render
+call and maps it to -1..1 for 10 ms smoothing. It operates after Mono on stereo
+outputs; mono output buses bypass the pan matrix. The editor displays zero as
+`C`, negative positions as an unsigned number followed by `L`, and positive
+positions followed by `R`. Signed integer input, `C`, and unsigned `L`/`R`
+notation share strict range/character validation; see [UI](ui.md#panorama).
+See [Panorama playback](playback-warp-and-transients.md#sample-panorama) and
+[the Panorama realtime audit](realtime-audio-audit-panorama.md).
+
 Gain defaults to 0 dB for missing values in older state. Its cache rejects non-finite
-input and clamps to -10..10 dB; conversion to linear gain occurs only on writes.
+input and clamps to -20..20 dB; conversion to linear gain occurs only on writes.
 Voices read only the linear atomic and smooth live changes, including on existing
-hits. See [the Gain realtime audit](realtime-audio-audit-gain.md).
+hits. The value field renders its unit as `dB`; Pitch and Formant render `st`, and
+Punch and Mono render `%`. See [the Gain realtime audit](realtime-audio-audit-gain.md).
 
 Formant is the former PSOLA Formant3 option, renamed in the editor and host.
 `PluginParameters::sampleFormantSemitonesId` intentionally retains the serialized
 ID `sampleFormant3Semitones` and its existing layout slot, so prior PSOLA values
 and host automation continue to control the surviving effect. Its range remains
--12..12 semitones, default zero. The per-note cache rejects non-finite writes,
+-12..12 semitones in 0.1-semitone steps, default zero. The per-note cache rejects non-finite writes,
 clamps the range and computes `2^(semitones/12)` on writes. One ratio read drives
 both PSOLA and its following EQ/saturation stage, with 20 ms smoothing.
 
@@ -91,7 +127,7 @@ realtime cache, listener or Apply to All registration. Its host value and old
 per-sample properties may round-trip in state but never affect playback. Old
 LPC values are not reinterpreted as PSOLA values. Missing PSOLA values default to
 zero. Selection, editor-closed automation, state and Apply to All now use the
-four-entry registry: Gain, Punch, Pitch, Formant.
+six-entry registry: Gain, Punch, Pitch, Formant, Mono, Panorama.
 
 Formant 0 retains natural varispeed formants. The surviving PSOLA version keeps
 its existing post-processing: LPC envelope EQ at 95% of the original correction
@@ -105,18 +141,34 @@ and does not modify the sample Gain knob or add saved state. See [Formant playba
 
 ## Apply To All
 
-`APPLY TO ALL` copies the last UI-edited sample-specific parameter and its captured
-value to every loaded sample group, including all velocity layers/variations that
-share that group's MIDI note. Other parameters and the selected group stay as they
-were. Gain, Punch, Pitch, and Formant are registered.
+`APPLY TO ALL` copies the effect selected in the adjacent dropdown to every loaded
+sample group, including all velocity layers/variations that share that group's
+MIDI note. The value is read from the selected sample when the button is clicked.
+Other parameters and the selected group stay as they were. The dropdown is built
+from `PluginParameters::sampleSpecificParameters`, using each APVTS parameter's
+host-facing name; Gain, Punch, Pitch, Formant, Mono, and Panorama are registered.
 
-The editor observes APVTS change gestures for every registered parameter. Mere
-selection, control refresh, ordinary host automation, and state restore do not
-replace the captured edit. Switching groups retains that edit's value. Tracking
-lasts for the current editor session and is not serialized. The button is disabled
-until an actual edit occurs; beginning a gesture without changing a value does
-not count. Knob drags, wheel/keyboard edits, double-click resets, and attached
-toggles use the same tracking.
+The editor observes APVTS change gestures for every registered parameter.
+Selection changes, control refreshes, ordinary host automation, and state restore
+do not change the dropdown selection. An actual UI edit auto-selects its effect,
+and the user may select another registered effect directly. Switching groups
+retains the effect selection while changing the source value used on the next
+click. The selection lasts for the current editor session and is not serialized.
+Each new editor starts with Gain selected. The button is disabled when there are
+no sample groups or no valid effect selection; beginning a gesture without
+changing a value does not count as an edit. Knob drags, wheel/keyboard edits,
+double-click resets, committed sample-effect value inputs, and attached
+toggles use the same tracking. The value inputs use a slider change gesture only
+when a complete committed value changes the parameter; typing, cancellation and
+automation refresh do not auto-select an effect.
+
+The dropdown selection is also the editor's arrow-key target. Up/Right adds one
+parameter interval and Down/Left subtracts one interval, using a normal slider
+gesture and the parameter range's clamping. This is 0.1 dB for Gain, 1% (0.01
+internally) for Punch/Mono, 0.1 semitone for Pitch/Formant, and 1 for Panorama.
+Selecting an effect in
+the dropdown returns keyboard focus to the editor so the next arrow key adjusts
+that effect; arrow keys continue to navigate while the dropdown menu is open.
 
 The processor's message-thread-only `applySampleSpecificParameterToAll` normalizes
 the value through its APVTS range, writes the registered realtime cache and stored

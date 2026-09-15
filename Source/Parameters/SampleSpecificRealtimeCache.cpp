@@ -29,7 +29,11 @@ void SampleSpecificRealtimeCache::reset() noexcept
         semitones.store(0.0f, std::memory_order_relaxed);
 
     for (auto& punchAmount : punchAmountByMidiNote)
-        punchAmount.store(0.0f, std::memory_order_relaxed);
+        punchAmount.store(PluginParameters::samplePunchDefault, std::memory_order_relaxed);
+    for (auto& monoAmount : monoAmountByMidiNote)
+        monoAmount.store(PluginParameters::sampleMonoAmountDefault, std::memory_order_relaxed);
+    for (auto& pan : panByMidiNote)
+        pan.store(PluginParameters::samplePanDefault, std::memory_order_relaxed);
 }
 
 void SampleSpecificRealtimeCache::setFormantSemitonesForMidiNote(int midiNote, float semitones) noexcept
@@ -60,6 +64,8 @@ void SampleSpecificRealtimeCache::setPitchSemitonesForMidiNote(int midiNote, flo
     if (midiNote < 0 || midiNote >= midiNoteCount || !std::isfinite(semitones))
         return;
 
+    semitones = juce::jlimit(PluginParameters::samplePitchSemitonesMinimum,
+                            PluginParameters::samplePitchSemitonesMaximum, semitones);
     const auto pitchRatio = static_cast<float>(std::pow(2.0, static_cast<double>(semitones) / 12.0));
     if (!std::isfinite(pitchRatio) || pitchRatio <= 0.0f)
         return;
@@ -88,17 +94,67 @@ void SampleSpecificRealtimeCache::setPunchAmountForMidiNote(int midiNote, float 
     if (midiNote < 0 || midiNote >= midiNoteCount || !std::isfinite(amount))
         return;
 
-    punchAmountByMidiNote[(size_t) midiNote].store(juce::jlimit(0.0f, 1.0f, amount),
-                                                   std::memory_order_relaxed);
+    const float clamped = juce::jlimit(PluginParameters::samplePunchMinimum,
+                                      PluginParameters::samplePunchMaximum, amount);
+    const float snapped = std::round(clamped / PluginParameters::samplePunchInterval)
+        * PluginParameters::samplePunchInterval;
+    punchAmountByMidiNote[(size_t) midiNote].store(
+        juce::jlimit(PluginParameters::samplePunchMinimum,
+                     PluginParameters::samplePunchMaximum, snapped),
+        std::memory_order_relaxed);
 }
 
 float SampleSpecificRealtimeCache::getPunchAmountForMidiNote(int midiNote) const noexcept
 {
     if (midiNote < 0 || midiNote >= midiNoteCount)
-        return 0.0f;
+        return PluginParameters::samplePunchDefault;
 
     const float amount = punchAmountByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed);
-    return std::isfinite(amount) ? juce::jlimit(0.0f, 1.0f, amount) : 0.0f;
+    return std::isfinite(amount)
+        ? juce::jlimit(PluginParameters::samplePunchMinimum,
+                       PluginParameters::samplePunchMaximum, amount)
+        : PluginParameters::samplePunchDefault;
+}
+
+void SampleSpecificRealtimeCache::setMonoAmountForMidiNote(int midiNote, float amount) noexcept
+{
+    if (midiNote < 0 || midiNote >= midiNoteCount || !std::isfinite(amount))
+        return;
+
+    const float clamped = juce::jlimit(PluginParameters::sampleMonoAmountMinimum,
+                                      PluginParameters::sampleMonoAmountMaximum, amount);
+    const float snapped = std::round(clamped / PluginParameters::sampleMonoAmountInterval)
+        * PluginParameters::sampleMonoAmountInterval;
+    monoAmountByMidiNote[(size_t) midiNote].store(
+        juce::jlimit(PluginParameters::sampleMonoAmountMinimum,
+                     PluginParameters::sampleMonoAmountMaximum, snapped),
+        std::memory_order_relaxed);
+}
+
+float SampleSpecificRealtimeCache::getMonoAmountForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        ? monoAmountByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed)
+        : PluginParameters::sampleMonoAmountDefault;
+}
+
+void SampleSpecificRealtimeCache::setPanForMidiNote(int midiNote, float position) noexcept
+{
+    if (midiNote < 0 || midiNote >= midiNoteCount || !std::isfinite(position))
+        return;
+
+    const float clamped = juce::jlimit(PluginParameters::samplePanMinimum,
+                                      PluginParameters::samplePanMaximum, position);
+    const float snapped = std::round(clamped / PluginParameters::samplePanInterval)
+        * PluginParameters::samplePanInterval;
+    panByMidiNote[(size_t) midiNote].store(snapped, std::memory_order_relaxed);
+}
+
+float SampleSpecificRealtimeCache::getPanForMidiNote(int midiNote) const noexcept
+{
+    return midiNote >= 0 && midiNote < midiNoteCount
+        ? panByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed)
+        : PluginParameters::samplePanDefault;
 }
 
 void SampleSpecificRealtimeCache::setGainDbForMidiNote(int midiNote, float decibels) noexcept

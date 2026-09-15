@@ -1,5 +1,9 @@
 #include "MidiNoteActivityState.h"
 
+static_assert(std::atomic<float>::is_always_lock_free);
+static_assert(std::atomic<int>::is_always_lock_free);
+static_assert(std::atomic<uint32_t>::is_always_lock_free);
+
 MidiNoteActivityState::MidiNoteActivityState()
 {
     for (auto& generation : generations)
@@ -37,6 +41,8 @@ void MidiNoteActivityState::handleMidiMessage(const juce::MidiMessage& message) 
         ++activeNoteCounts[(size_t) midiNote];
         velocities[(size_t) midiNote].store(message.getFloatVelocity(), std::memory_order_relaxed);
         generations[(size_t) midiNote].fetch_add(1, std::memory_order_relaxed);
+        latestNoteOnMidiNote.store(midiNote, std::memory_order_relaxed);
+        latestNoteOnGeneration.fetch_add(1, std::memory_order_release);
         return;
     }
 
@@ -73,4 +79,14 @@ uint32_t MidiNoteActivityState::getGenerationForMidiNote(int midiNote) const noe
         return 0;
 
     return generations[(size_t) midiNote].load(std::memory_order_relaxed);
+}
+
+int MidiNoteActivityState::getLatestNoteOnMidiNote() const noexcept
+{
+    return latestNoteOnMidiNote.load(std::memory_order_relaxed);
+}
+
+uint32_t MidiNoteActivityState::getLatestNoteOnGeneration() const noexcept
+{
+    return latestNoteOnGeneration.load(std::memory_order_acquire);
 }

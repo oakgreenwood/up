@@ -3,7 +3,7 @@
 
 namespace PluginParameters
 {
-    const std::array<SampleSpecificParameter, 4> sampleSpecificParameters {{
+    const std::array<SampleSpecificParameter, 6> sampleSpecificParameters {{
         { samplePunchId,
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getPunchAmountForMidiNote(note); },
@@ -26,7 +26,17 @@ namespace PluginParameters
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getFormantSemitonesForMidiNote(note); },
           [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
-          { cache.setFormantSemitonesForMidiNote(note, value); } }
+          { cache.setFormantSemitonesForMidiNote(note, value); } },
+        { sampleMonoAmountId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getMonoAmountForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setMonoAmountForMidiNote(note, value); } },
+        { samplePanId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getPanForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setPanForMidiNote(note, value); } }
     }};
 
     const SampleSpecificParameter* findSampleSpecificParameter(const juce::String& parameterId) noexcept
@@ -65,13 +75,15 @@ namespace PluginParameters
                        samplePunchId,
                        "Punch",
                        juce::NormalisableRange<float>(samplePunchMinimum,
-                                                       samplePunchMaximum),
+                                                       samplePunchMaximum,
+                                                       samplePunchInterval),
                        samplePunchDefault),
                    std::make_unique<juce::AudioParameterFloat>(
                        samplePitchSemitonesId,
                        "Pitch",
                        juce::NormalisableRange<float>(samplePitchSemitonesMinimum,
-                                                       samplePitchSemitonesMaximum),
+                                                       samplePitchSemitonesMaximum,
+                                                       semitoneInterval),
                        samplePitchSemitonesDefault),
                    std::make_unique<juce::AudioParameterBool>(
                        samplePitchPreserveLengthId,
@@ -80,7 +92,9 @@ namespace PluginParameters
                    std::make_unique<juce::AudioParameterFloat>(
                        sampleGainDbId,
                        "Gain",
-                       juce::NormalisableRange<float>(sampleGainDbMinimum, sampleGainDbMaximum),
+                       juce::NormalisableRange<float>(sampleGainDbMinimum,
+                                                       sampleGainDbMaximum,
+                                                       sampleGainDbInterval),
                        sampleGainDbDefault,
                        juce::AudioParameterFloatAttributes().withLabel("dB")),
                    std::make_unique<juce::AudioParameterFloat>(
@@ -94,9 +108,24 @@ namespace PluginParameters
                        sampleFormantSemitonesId,
                        "Formant",
                        juce::NormalisableRange<float>(sampleFormantSemitonesMinimum,
-                                                       sampleFormantSemitonesMaximum),
+                                                       sampleFormantSemitonesMaximum,
+                                                       semitoneInterval),
                        sampleFormantSemitonesDefault,
-                       juce::AudioParameterFloatAttributes().withLabel("st")));
+                       juce::AudioParameterFloatAttributes().withLabel("st")),
+                   std::make_unique<juce::AudioParameterFloat>(
+                       sampleMonoAmountId,
+                       "Mono",
+                       juce::NormalisableRange<float>(sampleMonoAmountMinimum,
+                                                       sampleMonoAmountMaximum,
+                                                       sampleMonoAmountInterval),
+                       sampleMonoAmountDefault),
+                   std::make_unique<juce::AudioParameterFloat>(
+                       samplePanId,
+                       "Panorama",
+                       juce::NormalisableRange<float>(samplePanMinimum,
+                                                       samplePanMaximum,
+                                                       samplePanInterval),
+                       samplePanDefault));
 
         return layout;
     }

@@ -86,6 +86,9 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
     const float formantRatio = getCurrentFormantRatio();
     formantShifter.setRatio(formantRatio);
     formantColouration.setRatio(formantRatio);
+    sampleMonoAmount.setTargetValue(getCurrentSampleMonoAmount());
+    samplePan.setTargetValue(getCurrentSamplePan());
+    const bool stereoOutput = outputBuffer.getNumChannels() > 1;
     int rendered = 0;
     while (rendered < numSamples && currentSound != nullptr)
     {
@@ -103,6 +106,16 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
             formantShifter.process(left[i], right[i]);
             // Retain the PSOLA option's EQ and saturation coloration.
             formantColouration.process(left[i], right[i]);
+            // Narrow the final voice signal, including effect tails, before pan.
+            const float monoAmount = sampleMonoAmount.getNextValue();
+            if (monoAmount > 0.0f)
+            {
+                const float mid = 0.5f * left[i] + 0.5f * right[i];
+                const float side = (0.5f * left[i] - 0.5f * right[i]) * (1.0f - monoAmount);
+                left[i] = mid + side;
+                right[i] = mid - side;
+            }
+            applySamplePan(left[i], right[i], stereoOutput);
             for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)
                 outputBuffer.addSample(ch, startSample + rendered + i,
                     ch == 0 ? left[i] : (ch == 1 ? right[i] : 0.5f * (left[i] + right[i])));
@@ -233,6 +246,14 @@ void PercussionVoice::beginPlayback(float velocity)
     const double sampleRate = getSampleRate();
     sampleGain.reset(std::isfinite(sampleRate) && sampleRate > 0.0 ? sampleRate : 44100.0, 0.01);
     sampleGain.setCurrentAndTargetValue(getCurrentSampleGain());
+    sampleMonoAmount.reset(std::isfinite(sampleRate) && sampleRate > 0.0 ? sampleRate : 44100.0, 0.01);
+    sampleMonoAmount.setCurrentAndTargetValue(getCurrentSampleMonoAmount());
+    const double panSampleRate = std::isfinite(sampleRate) && sampleRate >= 1000.0
+        && sampleRate <= 768000.0 ? sampleRate : 44100.0;
+    samplePan.reset(panSampleRate, 0.01);
+    samplePan.setCurrentAndTargetValue(getCurrentSamplePan());
+    lastPanPosition = 0.0f;
+    panNormalization = 1.0;
 
     if (currentSound == nullptr)
     {
@@ -724,6 +745,44 @@ float PercussionVoice::getCurrentSampleGain() const noexcept
 {
     return sampleSpecificCache != nullptr && currentSound != nullptr
         ? sampleSpecificCache->getGainLinearForMidiNote(currentSound->getMidiRootNote()) : 1.0f;
+}
+
+float PercussionVoice::getCurrentSampleMonoAmount() const noexcept
+{
+    return sampleSpecificCache != nullptr && currentSound != nullptr
+        ? sampleSpecificCache->getMonoAmountForMidiNote(currentSound->getMidiRootNote()) : 0.0f;
+}
+
+float PercussionVoice::getCurrentSamplePan() const noexcept
+{
+    return sampleSpecificCache != nullptr && currentSound != nullptr
+        ? sampleSpecificCache->getPanForMidiNote(currentSound->getMidiRootNote()) / 50.0f : 0.0f;
+}
+
+void PercussionVoice::applySamplePan(float& left, float& right, bool stereoOutput) noexcept
+{
+    const float position = juce::jlimit(-1.0f, 1.0f, samplePan.getNextValue());
+    // Advance smoothing on mono buses too, but don't pan away their only output.
+    if (!stereoOutput || position == 0.0f)
+        return;
+
+    const double pan = position;
+    if (position != lastPanPosition)
+    {
+        // Normalized crossfeed: for L == R, the two output powers sum to the
+        // same value at every position. Steady pan needs no square root.
+        panNormalization = 1.0 / std::sqrt(1.0 + pan * pan);
+        lastPanPosition = position;
+    }
+
+    const double inputL = left;
+    const double inputR = right;
+    const float outputL = static_cast<float>(panNormalization
+        * (pan < 0.0 ? inputL - pan * inputR : (1.0 - pan) * inputL));
+    const float outputR = static_cast<float>(panNormalization
+        * (pan > 0.0 ? inputR + pan * inputL : (1.0 + pan) * inputR));
+    left = std::isfinite(outputL) ? outputL : 0.0f;
+    right = std::isfinite(outputR) ? outputR : 0.0f;
 }
 
 float PercussionVoice::getCurrentSamplePunchAmount() const noexcept

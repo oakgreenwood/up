@@ -32,7 +32,7 @@ when behavior changes.
 - `Source/Parameters/SampleSpecificRealtimeCache.cpp`: fixed-size, lock-free
   realtime cache for per-MIDI-note sample-specific playback values.
 - `Source/Midi/MidiNoteActivityState.cpp`: fixed-size, lock-free handoff for
-  per-MIDI-note UI activity velocities.
+  per-MIDI-note UI activity velocities and latest-note editor selection.
 - `Source/UI/SampleGroupSelector.cpp`: bottom UI selector for choosing the
   currently edited sample group.
 - `Source/SampleLibrary/PercussionSampleLibrary.cpp`: embedded BinaryData

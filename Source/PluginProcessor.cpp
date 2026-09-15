@@ -121,6 +121,16 @@ uint32_t AudioPluginAudioProcessor::getMidiNoteActivityGeneration(int midiNote) 
     return midiNoteActivity.getGenerationForMidiNote(midiNote);
 }
 
+int AudioPluginAudioProcessor::getLatestMidiNoteOnNote() const noexcept
+{
+    return midiNoteActivity.getLatestNoteOnMidiNote();
+}
+
+uint32_t AudioPluginAudioProcessor::getLatestMidiNoteOnGeneration() const noexcept
+{
+    return midiNoteActivity.getLatestNoteOnGeneration();
+}
+
 float AudioPluginAudioProcessor::getSampleSpecificParameterValue(const juce::String& parameterId,
                                                                  float fallbackValue) const
 {
