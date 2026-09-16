@@ -2,20 +2,34 @@
 
 #include "PunchEnvelope.h"
 
-#include <climits>
 #include <cmath>
+#include <limits>
 
 bool RealtimeWarpPlayer::prepare(double playbackSampleRate, int channelCount, int maxExpectedBlockSize)
 {
-    const int channels = juce::jlimit(1, 2, channelCount);
-    const auto sampleRate = (size_t) juce::jmax(1.0, playbackSampleRate);
-
-    const bool rebuild = !stretcher
-                       || stretcherSampleRate != sampleRate
-                       || stretcherChannels != channels;
-
-    if (rebuild)
+    stretcher = nullptr;
+    stretcherChannels = 0;
+    if (!std::isfinite(playbackSampleRate) || playbackSampleRate < 1.0
+        || playbackSampleRate >= static_cast<double>(std::numeric_limits<size_t>::max()))
     {
+        stretcherSampleRate = 0;
+        return false;
+    }
+
+    const int channels = juce::jlimit(1, 2, channelCount);
+    const auto sampleRate = static_cast<size_t>(playbackSampleRate);
+
+    for (size_t i = 0; i < preparedStretchers.size(); ++i)
+    {
+        auto& prepared = preparedStretchers[i];
+        if (i >= static_cast<size_t>(channels))
+        {
+            prepared.reset();
+            continue;
+        }
+        if (prepared != nullptr && stretcherSampleRate == sampleRate)
+            continue;
+
         const auto options =
             RubberBand::RubberBandStretcher::OptionProcessRealTime
           | RubberBand::RubberBandStretcher::OptionThreadingNever
@@ -25,17 +39,17 @@ bool RealtimeWarpPlayer::prepare(double playbackSampleRate, int channelCount, in
           | RubberBand::RubberBandStretcher::OptionWindowShort
           | RubberBand::RubberBandStretcher::OptionChannelsTogether;
 
-        stretcher = std::make_unique<RubberBand::RubberBandStretcher>(
+        prepared = std::make_unique<RubberBand::RubberBandStretcher>(
             sampleRate,
-            (size_t) channels,
+            i + 1,
             options);
-
-        stretcherSampleRate = sampleRate;
-        stretcherChannels = channels;
     }
 
-    ensureBuffers(channels, juce::jmax(4096, maxExpectedBlockSize));
-    return stretcher != nullptr;
+    stretcherSampleRate = sampleRate;
+    const int capacity = juce::jmax(4096, maxExpectedBlockSize);
+    inputBuffer.setSize(channels, capacity, false, false, true);
+    outputScratch.setSize(channels, capacity, false, false, true);
+    return true;
 }
 
 bool RealtimeWarpPlayer::start(int sourceStartSample,
@@ -46,16 +60,23 @@ bool RealtimeWarpPlayer::start(int sourceStartSample,
                                int channelCount,
                                double pitchScaleMultiplier)
 {
-    if (!prepare(playbackSampleRate, channelCount))
+    const int channels = juce::jlimit(1, 2, channelCount);
+    auto* prepared = preparedStretchers[static_cast<size_t>(channels - 1)].get();
+    if (prepared == nullptr || !std::isfinite(playbackSampleRate)
+        || playbackSampleRate < 1.0
+        || std::floor(playbackSampleRate) != static_cast<double>(stretcherSampleRate)
+        || inputBuffer.getNumChannels() < channels || outputScratch.getNumChannels() < channels
+        || inputBuffer.getNumSamples() <= 0 || outputScratch.getNumSamples() <= 0)
         return false;
 
+    stretcher = prepared;
+    stretcherChannels = channels;
     stretcher->reset();
     sourcePosition = juce::jmax(0, sourceStartSample);
     ended = false;
     outputTimeSec = juce::jmax(0.0, sourceStartTimeSec);
     setPitchScaleMultiplier(pitchScaleMultiplier);
     setRubberBandRates(timeRatio, activeSourceSampleRate, playbackSampleRate);
-    ensureBuffers(stretcherChannels, 4096);
     return true;
 }
 
@@ -93,7 +114,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
 {
     Result result;
 
-    if (stretcher == nullptr)
+    if (stretcher == nullptr || numSamples <= 0)
         return result;
 
     const int sourceNumSamples = source.getNumSamples();
@@ -101,6 +122,13 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
     const int outNumChans = outputBuffer.getNumChannels();
 
     if (sourceNumSamples <= 0 || sourceNumChans <= 0)
+    {
+        result.finished = true;
+        return result;
+    }
+
+    const int channels = juce::jlimit(1, 2, sourceNumChans);
+    if (channels != stretcherChannels)
     {
         result.finished = true;
         return result;
@@ -115,9 +143,6 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
     {
         setRubberBandRates(ratio, activeSourceSampleRate, playbackSampleRate);
     }
-
-    const int channels = juce::jlimit(1, 2, sourceNumChans);
-    ensureBuffers(channels, numSamples);
 
     const bool doSustainShorten = sustainShaper.shouldShape(sustainAmount);
     const bool doPunch = punchAmount > 0.0f;
@@ -150,16 +175,11 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                 }
 
                 const size_t required = juce::jmax<size_t>(1, stretcher->getSamplesRequired());
-                const int requiredInt = (int) juce::jlimit<size_t>(1, (size_t) INT_MAX, required);
-
-                if (inputBuffer.getNumSamples() < requiredInt)
-                {
-                    inputBuffer.setSize(channels, requiredInt, false, false, true);
-                    outputScratch.setSize(channels, juce::jmax(requiredInt, numSamples), false, false, true);
-                }
-
-                const bool isLastBlock = (!loopWhileHeld && remaining <= requiredInt);
-                const int toFeed = juce::jmin(requiredInt, remaining);
+                // Rubber Band's demand may exceed scratch capacity. Feed it in
+                // pieces, and only mark the actual last source piece as final.
+                const int toFeed = static_cast<int>(juce::jmin(required,
+                    static_cast<size_t>(remaining), static_cast<size_t>(inputBuffer.getNumSamples())));
+                const bool isLastBlock = !loopWhileHeld && toFeed == remaining;
 
                 if (toFeed > 0)
                 {
@@ -207,7 +227,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
             return result;
         }
 
-        const int toGet = juce::jmin(available, numSamples - produced);
+        const int toGet = juce::jmin(available, numSamples - produced, outputScratch.getNumSamples());
 
         float* out0 = outputScratch.getWritePointer(0);
         float* out1 = (channels > 1) ? outputScratch.getWritePointer(1) : out0;
@@ -215,9 +235,11 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
         outputPtrs[0] = out0;
         outputPtrs[1] = out1;
 
-        stretcher->retrieve(outputPtrs.data(), (size_t) toGet);
+        const int retrieved = static_cast<int>(stretcher->retrieve(outputPtrs.data(), (size_t) toGet));
+        if (retrieved <= 0)
+            return result;
 
-        for (int i = 0; i < toGet; ++i)
+        for (int i = 0; i < retrieved; ++i)
         {
             const float env = adsr.getNextSample();
             const float gain = env * velocityGain * sampleGain.getNextValue();
@@ -270,7 +292,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
             outputTimeSec += sourceStepSec;
         }
 
-        produced += toGet;
+        produced += retrieved;
     }
 
     return result;
@@ -328,16 +350,4 @@ void RealtimeWarpPlayer::resetForLoop(double activeSourceSampleRate,
     ended = false;
     outputTimeSec = 0.0;
     sustainShaper.resetPosition();
-}
-
-void RealtimeWarpPlayer::ensureBuffers(int channelCount, int sampleCount)
-{
-    const int channels = juce::jlimit(1, 2, channelCount);
-    const int samples = juce::jmax(1, sampleCount);
-
-    if (inputBuffer.getNumChannels() != channels || inputBuffer.getNumSamples() < samples)
-    {
-        inputBuffer.setSize(channels, samples, false, false, true);
-        outputScratch.setSize(channels, samples, false, false, true);
-    }
 }

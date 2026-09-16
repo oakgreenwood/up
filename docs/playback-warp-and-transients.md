@@ -327,6 +327,33 @@ performance limits and existing plugin-wide blockers.
   pitch and may briefly cost more CPU. Once cached, `SamplePlaybackRenderer`
   avoids realtime RubberBand's steady playback cost for that `(BPM, pitch)`.
 
+### Realtime Fallback Resources
+
+`prepareToPlay -> PercussionVoice::prepareRealtimeWarpResources` prepares both
+mono and stereo Rubber Band engines for each voice. `RealtimeWarpPlayer::start`
+selects the matching prepared engine without constructing, replacing, or
+destroying an engine. A missing configuration or playback-rate mismatch returns
+failure instead of allocating during playback. Engine replacement happens only
+during preparation with rendering stopped; voice teardown releases both engines.
+
+The shared input and output scratch buffers are sized during preparation to
+`max(4096, samplesPerBlock)` frames and two channels. Their dimensions remain
+fixed until the next preparation. Rendering feeds at most the smaller of Rubber
+Band's requested input, remaining source frames, and input capacity. Retrieval
+is capped by output capacity and the remaining requested output. Only frames
+actually retrieved are mixed. A non-looping source is marked final only when
+the last source piece is fed, including when one engine request spans several
+pieces. Zero-frame renders return without touching the engine. Larger host
+blocks still pass through the voice's existing 128-frame chunks.
+
+Preparing both channel configurations increases per-voice preparation memory.
+This removes wrapper-owned allocation and resizing from note starts and rendering;
+Rubber Band's internal allocation/reclamation during reset, ratio changes and
+processing remains a separate realtime blocker. The existing feed/reset loop
+also retains its lack of a work budget. Pitch debounce, live tempo/pitch updates,
+cache scheduling and cache reclamation are unchanged. See the
+[fixed-capacity fallback audit](realtime-audio-audit-warp-fixed-capacity.md).
+
 ### Offline Duration And Transient Alignment
 
 `PercussionSound::renderWarpedCache` sets RubberBand's expected input duration

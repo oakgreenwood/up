@@ -18,6 +18,8 @@ public:
         bool finished = false;
     };
 
+    // Call only during preparation, with rendering stopped. Prepares engines for
+    // every source channel count up to channelCount and fixes scratch capacity.
     bool prepare(double playbackSampleRate, int channelCount, int maxExpectedBlockSize = 4096);
     bool start(int sourceStartSample,
                double sourceStartTimeSec,
@@ -66,9 +68,9 @@ private:
     void resetForLoop(double activeSourceSampleRate,
                       double playbackSampleRate,
                       SustainTailShaper& sustainShaper);
-    void ensureBuffers(int channelCount, int sampleCount);
-
-    std::unique_ptr<RubberBand::RubberBandStretcher> stretcher;
+    std::array<std::unique_ptr<RubberBand::RubberBandStretcher>, 2> preparedStretchers;
+    // Borrows the selected prepared engine; start() never transfers ownership.
+    RubberBand::RubberBandStretcher* stretcher = nullptr;
     size_t stretcherSampleRate = 0;
     int stretcherChannels = 0;
 
