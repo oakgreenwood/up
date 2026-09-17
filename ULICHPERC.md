@@ -58,6 +58,8 @@ when behavior changes.
   prepared delay/correction rings and a dry fallback for unpitched material.
 - `Source/Effects/RzhavProcessor.cpp`: `Rzhavchina` bit-depth and sample-rate
   reduction effect.
+- `Source/Effects/OttProcessor.cpp`: global three-band upward/downward
+  compression after Rzhavchina, with a single OTT amount control.
 - `Source/SampleMetadata.cpp`: transient JSON lookup and parsing.
 - `CMakeLists.txt`: plugin target, formats, BinaryData resources, JUCE, and
   RubberBand integration.

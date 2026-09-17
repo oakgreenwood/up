@@ -7,6 +7,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Effects/RzhavProcessor.h"
+#include "Effects/OttProcessor.h"
 #include "Midi/MidiNoteActivityState.h"
 #include "PercussionSynthesiser.h"
 #include "Parameters/SampleSpecificParameterState.h"
@@ -91,6 +92,8 @@ private:
     std::atomic<bool> warpEnabledAtomic { true };
     HostTempoTracker hostTempo;
     RzhavProcessor rzhavProcessor;
+    OttProcessor ottProcessor;
+    std::atomic<float>* ottAmountParam = nullptr;
     PercussionSynthesiser sampler;
     MidiNoteActivityState midiNoteActivity;
     std::vector<PercussionSampleLibrary::SampleGroupInfo> sampleGroups;

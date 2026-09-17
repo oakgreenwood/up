@@ -38,6 +38,7 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     DBG("=== AudioPluginAudioProcessor constructor ===");
 
     rzhavParam = parameters.getRawParameterValue(PluginParameters::rzhavchinaId);
+    ottAmountParam = parameters.getRawParameterValue(PluginParameters::ottAmountId);
     sustainShortenParam = parameters.getRawParameterValue(PluginParameters::sustainShortenId);
     warpParamRaw = parameters.getRawParameterValue(PluginParameters::warpEnabledId);
 
@@ -272,6 +273,8 @@ void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     setLatencySamples(FormantShifter::latencySamples + PsolaFormantShifter::latencyForSampleRate(sampleRate));
     sampler.setCurrentPlaybackSampleRate(sampleRate);
     rzhavProcessor.prepare(sampleRate);
+    ottProcessor.prepare(sampleRate, ottAmountParam != nullptr
+        ? ottAmountParam->load(std::memory_order_relaxed) : PluginParameters::ottAmountDefault);
     midiNoteActivity.reset();
     updateVoiceSharedState();
 
@@ -283,6 +286,7 @@ void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
 void AudioPluginAudioProcessor::releaseResources()
 {
     rzhavProcessor.reset();
+    ottProcessor.reset();
 }
 
 bool AudioPluginAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -332,6 +336,8 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         rzhavAmount = rzhavParam->load(std::memory_order_relaxed);
 
     rzhavProcessor.process(buffer, rzhavAmount);
+    ottProcessor.process(buffer, ottAmountParam != nullptr
+        ? ottAmountParam->load(std::memory_order_relaxed) : PluginParameters::ottAmountDefault);
 }
 
 //==============================================================================
@@ -363,7 +369,7 @@ double AudioPluginAudioProcessor::getTailLengthSeconds() const
     const double rate = std::isfinite(hostRate) && hostRate >= 1000.0 && hostRate <= 768000.0
         ? hostRate : 44100.0;
     return (double) (FormantShifter::tailSamples + PsolaFormantShifter::tailForSampleRate(rate))
-           / rate;
+           / rate + OttProcessor::tailSeconds;
 }
 
 int AudioPluginAudioProcessor::getNumPrograms() { return 1; }
@@ -404,6 +410,15 @@ void AudioPluginAudioProcessor::setStateInformation(const void* data, int sizeIn
         if (xml->hasTagName(parameters.state.getType()))
         {
             auto restoredState = juce::ValueTree::fromXml(*xml);
+            // APVTS retains the current value for absent parameters. Old
+            // projects must instead restore the new global effect as bypassed.
+            if (!restoredState.getChildWithProperty("id", PluginParameters::ottAmountId).isValid())
+            {
+                juce::ValueTree ottState("PARAM");
+                ottState.setProperty("id", PluginParameters::ottAmountId, nullptr);
+                ottState.setProperty("value", PluginParameters::ottAmountDefault, nullptr);
+                restoredState.appendChild(ottState, nullptr);
+            }
             parameters.replaceState(restoredState);
 
             int restoredSelectedIndex = findSampleGroupIndexForKey(

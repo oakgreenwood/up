@@ -12,6 +12,8 @@ namespace PluginParameters
     inline constexpr const char* rzhavchinaId = "rzhavchina";
     inline constexpr const char* sustainShortenId = "sustainShorten";
     inline constexpr const char* warpEnabledId = "warpEnabled";
+    inline constexpr const char* ottAmountId = "ottAmount";
+    inline constexpr float ottAmountDefault = 0.0f;
     inline constexpr const char* sampleGainDbId = "sampleGainDb";
     inline constexpr float sampleGainDbMinimum = -20.0f;
     inline constexpr float sampleGainDbMaximum = 20.0f;

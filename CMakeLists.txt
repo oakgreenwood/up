@@ -99,6 +99,8 @@ set(SourceFiles
         Source/Effects/FormantShifter.cpp
         Source/Effects/RzhavProcessor.h
         Source/Effects/RzhavProcessor.cpp
+        Source/Effects/OttProcessor.h
+        Source/Effects/OttProcessor.cpp
         Source/SampleLibrary/SampleNameParser.h
         Source/SampleLibrary/SampleNameParser.cpp
         Source/SampleLibrary/PercussionSampleLibrary.h

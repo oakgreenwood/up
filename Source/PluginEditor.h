@@ -73,10 +73,12 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress& key) override;
+    void mouseDown(const juce::MouseEvent& event) override;
     // juce::Slider bitDepthSlider;
     // juce::Slider sampleRateSlider;
     ImageKnobSlider rzhavSlider;
     ImageKnobSlider sustainSlider;
+    ImageKnobSlider ottSlider;
     ImageKnobSlider sampleGainSlider;
     ImageKnobSlider samplePunchSlider;
     ImageKnobSlider samplePitchSlider;
@@ -103,6 +105,7 @@ public:
     };
     juce::Label rzhavLabel;
     juce::Label sustainLabel;
+    juce::Label ottLabel;
     juce::Label sampleGainLabel;
     juce::Label samplePunchLabel;
     juce::Label samplePitchLabel;
@@ -118,6 +121,7 @@ public:
     // std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bitDepthAttachment;
     // std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sampleRateAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sustainAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> ottAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sampleGainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePunchAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePitchAttachment;
@@ -131,6 +135,7 @@ private:
     {
         juce::Slider* slider = nullptr;
         juce::String parameterId;
+        juce::Label* label = nullptr;
     };
 
     struct SampleSpecificEditBinding
@@ -142,7 +147,8 @@ private:
 
     void bindSliderToParameter(juce::Slider& slider,
                                const juce::String& parameterId,
-                               std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment);
+                               std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment,
+                               juce::Label* label = nullptr);
     void refreshSampleSpecificControls();
     juce::RangedAudioParameter* getSelectedApplyToAllParameter() const;
     void selectApplyToAllEffect(juce::RangedAudioParameter& parameter);

@@ -16,6 +16,9 @@ Check current scripts and target settings before running commands.
   PSOLA implementation needs no Python, Praat or additional dependency and uses
   the same sources on macOS arm64/x86_64/universal and Windows.
 - macOS defaults to universal `arm64;x86_64` unless overridden.
+- Global OTT compiles from `Source/Effects/OttProcessor.*` using the already
+  linked JUCE DSP module; no additional dependency or platform-specific code is
+  required for macOS or Windows.
 
 ## Build Command
 

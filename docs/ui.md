@@ -5,6 +5,14 @@ attachments, automation, or persistence, see [parameters and state](parameters-a
 Audio/message-thread activity handoff changes require the
 [realtime audio audit](../.agents/skills/realtime-audio-audit/SKILL.md).
 
+## Global OTT
+
+The global `OTT` knob sits immediately right of Pomyatost, with the existing
+image knob style and an `OTT` label, without a numeric input or value display.
+It controls compression strength from 0% to 100% in 1% steps, defaults to 0%,
+and double-click resets to 0%. Its ordinary APVTS attachment supplies automation
+and saved global state. Sample selection and Apply to All do not change it.
+
 ## Sample Gain
 
 The `Gain` knob sits immediately left of Punch and Pitch, using the same image
@@ -69,8 +77,10 @@ parameter's host-facing name, so newly registered sample-specific effects appear
 automatically. It starts with Gain selected. The collapsed dropdown has no border
 or background; only its selected effect name and arrow are visible.
 
-Editing a registered sample-specific effect selects that effect in the dropdown;
-the user may also choose one directly. Clicking the button reads the selected
+Editing a registered sample-specific effect or clicking its knob or effect-name
+label selects that effect in the dropdown. A click selects immediately without
+requiring a value change and gives the editor keyboard focus for arrow controls.
+The user may also choose an effect directly. Clicking the button reads the selected
 effect's current value from the selected sample and copies it to all sample
 groups. Changing samples keeps the effect selection, so the button then uses the
 new sample's current value. Changing a global effect does not affect the dropdown.

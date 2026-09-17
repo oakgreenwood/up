@@ -10,7 +10,7 @@ parameter storage or realtime-cache publication.
 Order: clear output; update BPM/transport via `HostTempoTracker`; publish the
 transport state to `WarpCachePrewarmer`; render the sampler (including each
 voice's PSOLA Formant followed by its LPC EQ/saturation, Mono and Panorama);
-process global effects.
+process global Rzhavchina, then OTT.
 The prewarmer's persistent worker performs all cache rendering and reclamation.
 
 `RzhavProcessor` implements `Rzhavchina`: true bypass at `0`; above zero, bit depth
@@ -21,6 +21,89 @@ No file I/O, logging, UI calls, allocations, or avoidable locks. Never access
 `SampleGroupSelector` or `SampleSpecificParameterState` here; use prepared
 realtime caches. Feed UI activity and the latest note-on selection through fixed
 atomics (`MidiNoteActivityState`) polled by the editor on the message thread.
+
+## Global OTT
+
+`OttProcessor` processes the combined mono/stereo instrument output after
+Rzhavchina. Its thresholds, ratios and crossovers follow the user's Ableton
+reference. Its RMS detector recovery and fixed band makeup are calibrated from
+the supplied `abletonNoOTT.wav` / `abletonOTT.wav` renders; see the
+[measured comparison](ott-reference-comparison.md). The single amount
+control scales the total input/compression/output gain in dB, preserving the
+neutral default at zero; it is compression depth, rather than a dry/wet control.
+The reference behavior for compression depth is described in
+[Ableton's Multiband Dynamics manual](https://www.ableton.com/en/live-manual/11/live-audio-effect-reference/#multiband-dynamics).
+
+Two fourth-order JUCE Linkwitz-Riley crossovers split at 88 Hz and 2.5 kHz.
+The low branch receives the high crossover's allpass phase response so the three
+unity-gain bands sum with flat magnitude. Cutoffs stay below Nyquist at low
+sample rates. A shared RMS power envelope per band smooths the greater squared
+channel magnitude, applying identical gains to left and right without cancelling
+opposing channel signals. Converting power directly with `10*log10` avoids a
+square root. Each band has a fixed +5.2 dB input gain included before
+threshold detection and once in the applied audio gain. Full depth uses an
+upward slope of `1/4.17` (the supplied Below ratio `1:4.17`), downward slopes
+of `1/66` for low/mid and zero for high (infinite downward compression):
+
+| Band | Upward threshold | Downward threshold | Downward ratio | Base attack | Base release |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Low | -41 dBFS | -33.8 dBFS | 66:1 | 47.8 ms | 282 ms |
+| Mid | -41 dBFS | -30.2 dBFS | 66:1 | 22.4 ms | 282 ms |
+| High | -41 dBFS | -37.5 dBFS | infinity:1 | 13.5 ms | 132 ms |
+
+The 65% Time scale remains on the base times. The RMS power detector also uses
+a fixed 0.15 release calibration factor: smoothing squared level is different
+from Ableton's detector/gain timing, and the former long amplitude decay kept
+quiet tails attenuated. These are this implementation's one-pole time constants,
+not a claim to reproduce Ableton's attack/release algorithm:
+
+| Band | RMS attack | RMS release | Calibrated band makeup |
+| --- | ---: | ---: | ---: |
+| Low | 31.07 ms | 27.495 ms | +12.5 dB |
+| Mid | 14.56 ms | 27.495 ms | +7.75 dB |
+| High | 8.775 ms | 12.87 ms | +11 dB |
+
+The compression ratios and Amount range retain their supplied values; there
+is no extra depth multiplier. The band makeup values are measured calibration
+choices, not values claimed to come from Ableton's preset. No additional UI
+control or parameter is introduced.
+
+Master output gain is -7 dB
+at full Amount, scaled in dB with the existing depth control: -3.5 dB at 50%
+and no cut at zero. It is included after the compression curve, so it does not
+alter detector thresholds or compression ratios. The existing depth smoothing
+also smooths the output trim; no additional control or saved parameter is added.
+The initial custom +3/+3/+4 dB makeup is removed. The previous
+24 dB upward cap and -72..-90 dB fade-out are removed so quiet background detail
+receives the full upward curve. A -120 dBFS detector floor bounds gain at silence
+(approximately 60.055 dB upward, plus input, band makeup and master trim at full
+depth) without adding noise or gating tails. Zero input from reset stays silent.
+Ableton's detector, crossover and Soft Knee behavior can still differ.
+
+Depth changes ramp over 20 ms. The detector and resulting gain now update every
+frame; the former 16-frame target/interpolation stage allowed stale upward gain
+to amplify new transients. The power envelope and depth ramp smooth gain without
+that extra delay. Entering/leaving zero also crossfades
+the crossover path over 20 ms to avoid an abrupt phase switch. Once at zero,
+finite dry samples pass through exactly; filters/detectors continue tracking so
+re-enabling does not restart from stale state. Active crossovers rotate phase;
+the brief bypass transition can therefore affect magnitude.
+
+Filters allocate their two-channel state only during preparation. Rendering
+uses fixed stack arrays, scalar state and a cached parameter atomic, with no
+block-sized scratch storage or allocation. Double filter/detector arithmetic,
+finite input/output checks and denormal suppression protect numerical state.
+Zero, one-frame and arbitrarily larger host blocks use the same bounded per-frame
+work. Preparation resets sample-rate-dependent state, and release resets history.
+No lookahead or additional latency is introduced; tail reporting adds a
+conservative 0.5 seconds for crossover ringing. This is a character compressor,
+not a peak limiter or loudness-matched effect; attacks can still exceed 0 dBFS.
+
+See [OTT state](parameters-and-state.md), [UI](ui.md#global-ott), and the
+[OTT realtime audit](realtime-audio-audit-ott.md). The isolated C++ DSP was compiled
+and tested on macOS arm64 against the reference and signal edge cases. Complete
+plugin builds, host validation, other platforms and listening comparisons on
+additional material remain unperformed.
 
 ## Metadata And Tempo
 
@@ -176,7 +259,7 @@ for remaining plugin-wide realtime blockers.
 Formant is the surviving PSOLA option, previously called Formant3. The separate
 LPC-only effect and its leading DSP stage are removed. Signal order is original,
 cached or realtime-warp source -> voice gain/shaping -> PSOLA -> retained LPC
-EQ/saturation -> negative-formant makeup gain -> Mono -> Panorama -> mix/global Rzhavchina. The knob spans -12..+12 semitones and
+EQ/saturation -> negative-formant makeup gain -> Mono -> Panorama -> mix/global Rzhavchina -> OTT. The knob spans -12..+12 semitones and
 keeps the former PSOLA parameter ID for state/automation compatibility; see
 [parameters and state](parameters-and-state.md).
 

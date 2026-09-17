@@ -23,6 +23,16 @@ APVTS parameters are serialized with `parameters.copyState()` and restored with
 | `sampleFormant3Semitones` | `Formant` | float `-12..12` semitones, `0.1` step | `0` | Additional formant shift using pitch-synchronous grains |
 | `sampleMonoAmount` | `Mono` | float `0..1`, `0.01` step | `0` | Sample-specific stereo-to-mono blend after Formant; editor displays `0%..100%` |
 | `samplePan` | `Panorama` | float `-50..50`, `1` step | `0` | Sample-specific stereo positioning after Mono; editor displays `50L..C..50R` |
+| `ottAmount` | `OTT` | float `0..1`, `0.01` step | `0` | Global three-band upward/downward compression depth after Rzhavchina |
+
+OTT is appended after Panorama, preserving existing host parameter indices. It
+is global: selection changes and Apply to All do not read or write it, and it has
+no per-note cache or sample-specific registry entry. A constructor-cached APVTS
+scalar atomic supplies the audio target once per block. The normal APVTS tree
+saves/restores it, including automation with the editor closed. Before replacing
+older state without `ottAmount`, restore inserts a zero-valued `PARAM` child so
+an already-used instance also returns to bypass instead of retaining its current
+OTT value. See [OTT playback](playback-warp-and-transients.md#global-ott).
 
 ## Program Metadata
 
@@ -150,8 +160,12 @@ host-facing name; Gain, Punch, Pitch, Formant, Mono, and Panorama are registered
 
 The editor observes APVTS change gestures for every registered parameter.
 Selection changes, control refreshes, ordinary host automation, and state restore
-do not change the dropdown selection. An actual UI edit auto-selects its effect,
-and the user may select another registered effect directly. Switching groups
+do not change the dropdown selection. An actual UI edit auto-selects its effect.
+Clicking a sample-specific knob or its effect-name label also selects the effect
+immediately, without requiring a value change or sending a parameter change.
+This click clears any previously queued edit selection and gives the editor
+keyboard focus for arrow controls. The user may also select another registered
+effect directly. Switching groups
 retains the effect selection while changing the source value used on the next
 click. The selection lasts for the current editor session and is not serialized.
 Each new editor starts with Gain selected. The button is disabled when there are

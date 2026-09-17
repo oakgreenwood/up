@@ -125,7 +125,12 @@ namespace PluginParameters
                        juce::NormalisableRange<float>(samplePanMinimum,
                                                        samplePanMaximum,
                                                        samplePanInterval),
-                       samplePanDefault));
+                       samplePanDefault),
+                   std::make_unique<juce::AudioParameterFloat>(
+                       ottAmountId,
+                       "OTT",
+                       juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f),
+                       ottAmountDefault));
 
         return layout;
     }

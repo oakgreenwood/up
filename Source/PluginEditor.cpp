@@ -456,6 +456,18 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible(sustainLabel);
     configureKnobLabel(sustainLabel, "Pomyatost");
 
+    addAndMakeVisible(ottSlider);
+    ottSlider.setComponentID(PluginUI::ottSliderId);
+    ottSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+    ottSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    ottSlider.setLookAndFeel(customLNF.get());
+    ottSlider.setDoubleClickReturnValue(true, PluginParameters::ottAmountDefault);
+    ottSlider.setMouseDragSensitivity(150);
+    bindSliderToParameter(ottSlider, PluginParameters::ottAmountId, ottAttachment);
+
+    addAndMakeVisible(ottLabel);
+    configureKnobLabel(ottLabel, "OTT");
+
     addAndMakeVisible(sampleGainSlider);
     sampleGainSlider.setComponentID(PluginUI::sampleGainSliderId);
     sampleGainSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
@@ -463,7 +475,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleGainSlider.setLookAndFeel(customLNF.get());
     sampleGainSlider.setDoubleClickReturnValue(true, PluginParameters::sampleGainDbDefault);
     sampleGainSlider.setMouseDragSensitivity(150);
-    bindSliderToParameter(sampleGainSlider, PluginParameters::sampleGainDbId, sampleGainAttachment);
+    bindSliderToParameter(sampleGainSlider, PluginParameters::sampleGainDbId, sampleGainAttachment, &sampleGainLabel);
     configureSignedDecimalValueInput(sampleGainSlider, " dB");
     sampleGainValueInput.discardEdit();
     addAndMakeVisible(sampleGainValueInput);
@@ -478,7 +490,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     samplePunchSlider.setLookAndFeel(customLNF.get());
     samplePunchSlider.setDoubleClickReturnValue(true, PluginParameters::samplePunchDefault);
     samplePunchSlider.setMouseDragSensitivity(150);
-    bindSliderToParameter(samplePunchSlider, PluginParameters::samplePunchId, samplePunchAttachment);
+    bindSliderToParameter(samplePunchSlider, PluginParameters::samplePunchId, samplePunchAttachment, &samplePunchLabel);
     configurePercentageValueInput(samplePunchSlider);
     samplePunchValueInput.discardEdit();
     addAndMakeVisible(samplePunchValueInput);
@@ -493,7 +505,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     samplePitchSlider.setLookAndFeel(customLNF.get());
     samplePitchSlider.setDoubleClickReturnValue(true, PluginParameters::samplePitchSemitonesDefault);
     samplePitchSlider.setMouseDragSensitivity(150);
-    bindSliderToParameter(samplePitchSlider, PluginParameters::samplePitchSemitonesId, samplePitchAttachment);
+    bindSliderToParameter(samplePitchSlider, PluginParameters::samplePitchSemitonesId, samplePitchAttachment, &samplePitchLabel);
     configureSignedDecimalValueInput(samplePitchSlider, " st");
     samplePitchValueInput.discardEdit();
     addAndMakeVisible(samplePitchValueInput);
@@ -508,7 +520,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleFormantSlider.setLookAndFeel(customLNF.get());
     sampleFormantSlider.setDoubleClickReturnValue(true, PluginParameters::sampleFormantSemitonesDefault);
     sampleFormantSlider.setMouseDragSensitivity(150);
-    bindSliderToParameter(sampleFormantSlider, PluginParameters::sampleFormantSemitonesId, sampleFormantAttachment);
+    bindSliderToParameter(sampleFormantSlider, PluginParameters::sampleFormantSemitonesId, sampleFormantAttachment, &sampleFormantLabel);
     configureSignedDecimalValueInput(sampleFormantSlider, " st");
     sampleFormantValueInput.discardEdit();
     addAndMakeVisible(sampleFormantValueInput);
@@ -523,7 +535,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleMonoSlider.setLookAndFeel(customLNF.get());
     sampleMonoSlider.setDoubleClickReturnValue(true, PluginParameters::sampleMonoAmountDefault);
     sampleMonoSlider.setMouseDragSensitivity(150);
-    bindSliderToParameter(sampleMonoSlider, PluginParameters::sampleMonoAmountId, sampleMonoAttachment);
+    bindSliderToParameter(sampleMonoSlider, PluginParameters::sampleMonoAmountId, sampleMonoAttachment, &sampleMonoLabel);
     configurePercentageValueInput(sampleMonoSlider);
     sampleMonoValueInput.discardEdit();
     addAndMakeVisible(sampleMonoValueInput);
@@ -538,7 +550,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     samplePanSlider.setLookAndFeel(customLNF.get());
     samplePanSlider.setDoubleClickReturnValue(true, PluginParameters::samplePanDefault);
     samplePanSlider.setMouseDragSensitivity(150);
-    bindSliderToParameter(samplePanSlider, PluginParameters::samplePanId, samplePanAttachment);
+    bindSliderToParameter(samplePanSlider, PluginParameters::samplePanId, samplePanAttachment, &samplePanLabel);
     configurePanoramaValueInput(samplePanSlider);
     samplePanValueInput.discardEdit();
     addAndMakeVisible(samplePanValueInput);
@@ -609,6 +621,16 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
             parameter->addListener(this);
         }
 
+    for (const auto& binding : sampleSpecificSliderBindings)
+    {
+        binding.slider->addMouseListener(this, false);
+        if (binding.label != nullptr)
+        {
+            binding.label->setInterceptsMouseClicks(true, false);
+            binding.label->addMouseListener(this, false);
+        }
+    }
+
     refreshSampleSpecificControls();
     refreshApplyToAllButton();
     startTimerHz(30);
@@ -617,6 +639,12 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
     stopTimer();
+    for (const auto& binding : sampleSpecificSliderBindings)
+    {
+        binding.slider->removeMouseListener(this);
+        if (binding.label != nullptr)
+            binding.label->removeMouseListener(this);
+    }
     for (const auto& binding : sampleSpecificEditBindings)
         binding.parameter->removeListener(this);
     sampleGroupSelector.onSelectedIndexChanged = {};
@@ -625,6 +653,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     // Clear L&F pointers before destroying the owned look and feel.
     rzhavSlider.setLookAndFeel(nullptr);
     sustainSlider.setLookAndFeel(nullptr);
+    ottSlider.setLookAndFeel(nullptr);
     sampleGainSlider.setLookAndFeel(nullptr);
     samplePunchSlider.setLookAndFeel(nullptr);
     samplePitchSlider.setLookAndFeel(nullptr);
@@ -638,7 +667,8 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 void AudioPluginAudioProcessorEditor::bindSliderToParameter(
     juce::Slider& slider,
     const juce::String& parameterId,
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment)
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment,
+    juce::Label* label)
 {
     attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processorRef.parameters,
@@ -648,7 +678,7 @@ void AudioPluginAudioProcessorEditor::bindSliderToParameter(
     if (!PluginParameters::isSampleSpecificParameterId(parameterId))
         return;
 
-    sampleSpecificSliderBindings.push_back(SampleSpecificSliderBinding { &slider, parameterId });
+    sampleSpecificSliderBindings.push_back(SampleSpecificSliderBinding { &slider, parameterId, label });
 
     // Processor listeners mirror values even when this editor is closed.
 }
@@ -742,6 +772,23 @@ void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
         ? juce::String("Apply the selected sample's current ")
             + parameter->getName(40) + " value to all samples."
         : "Select or edit a sample-specific effect to apply it to all samples.");
+}
+
+void AudioPluginAudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
+{
+    if (!event.mods.isLeftButtonDown())
+        return;
+
+    for (const auto& binding : sampleSpecificSliderBindings)
+        if (event.eventComponent == binding.slider || event.eventComponent == binding.label)
+            if (auto* parameter = processorRef.parameters.getParameter(binding.parameterId))
+            {
+                grabKeyboardFocus();
+                // The click takes precedence over any edit queued before focus moved.
+                pendingApplyToAllParameter = nullptr;
+                selectApplyToAllEffect(*parameter);
+                return;
+            }
 }
 
 bool AudioPluginAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
@@ -902,6 +949,7 @@ void AudioPluginAudioProcessorEditor::resized()
 
     placeKnobWithLabel(rzhavSlider, rzhavLabel, 0, 222);
     placeKnobWithLabel(sustainSlider, sustainLabel, 81, 222);
+    placeKnobWithLabel(ottSlider, ottLabel, 162, 222);
     placeKnobWithValueAndLabel(sampleGainSlider, sampleGainLabel, sampleGainValueInput,
                                getWidth() - labelWidth - 429, 222);
     placeKnobWithValueAndLabel(samplePunchSlider, samplePunchLabel, samplePunchValueInput,
