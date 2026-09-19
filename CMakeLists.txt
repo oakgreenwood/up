@@ -101,6 +101,11 @@ set(SourceFiles
         Source/Effects/RzhavProcessor.cpp
         Source/Effects/OttProcessor.h
         Source/Effects/OttProcessor.cpp
+        Source/Effects/SampleEqualiser.h
+        Source/Effects/SampleEqualiser.cpp
+        Source/Effects/SampleSpectrum.h
+        Source/UI/SampleEqualiserEditor.h
+        Source/UI/SampleEqualiserEditor.cpp
         Source/SampleLibrary/SampleNameParser.h
         Source/SampleLibrary/SampleNameParser.cpp
         Source/SampleLibrary/PercussionSampleLibrary.h

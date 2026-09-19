@@ -424,7 +424,8 @@ void NumericValueInput::refreshValue()
 //==============================================================================
 AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAudioProcessor& p)
     : AudioProcessorEditor (&p),
-      processorRef (p)
+      processorRef (p),
+      equaliserEditor(p)
 {
     juce::ignoreUnused (processorRef);
     setSize (900, 600);
@@ -558,6 +559,14 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible(samplePanLabel);
     configureKnobLabel(samplePanLabel, "Panorama");
 
+    addAndMakeVisible(equaliserEditor);
+    equaliserEditor.onSelected = [this]
+    {
+        pendingApplyToAllParameter = nullptr;
+        if (auto* parameter = processorRef.parameters.getParameter(PluginParameters::sampleEqFrequencyIds[0]))
+            selectApplyToAllEffect(*parameter);
+    };
+
     addAndMakeVisible(applyToAllButton);
     applyToAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
     applyToAllButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
@@ -612,9 +621,13 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
         if (auto* parameter = processorRef.parameters.getParameter(definition.id))
         {
             sampleSpecificEditBindings.push_back(SampleSpecificEditBinding { parameter });
-            applyToAllParameters.push_back(parameter);
-            applyToAllEffectSelector.addItem(
-                parameter->getName(40), static_cast<int>(applyToAllParameters.size()));
+            if (definition.effectId == nullptr || parameter->paramID == definition.effectId)
+            {
+                applyToAllParameters.push_back(parameter);
+                applyToAllEffectSelector.addItem(
+                    definition.effectName != nullptr ? juce::String(definition.effectName) : parameter->getName(40),
+                    static_cast<int>(applyToAllParameters.size()));
+            }
             if (parameter->paramID == PluginParameters::sampleGainDbId)
                 applyToAllEffectSelector.setSelectedId(
                     static_cast<int>(applyToAllParameters.size()), juce::dontSendNotification);
@@ -638,6 +651,8 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
+    equaliserEditor.endDrag();
+    equaliserEditor.onSelected = {};
     stopTimer();
     for (const auto& binding : sampleSpecificSliderBindings)
     {
@@ -686,6 +701,7 @@ void AudioPluginAudioProcessorEditor::bindSliderToParameter(
 void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
 {
     const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
+    equaliserEditor.selectionChanged();
     // An edit for the previous sample must never be committed to a new selection.
     sampleGainValueInput.discardEdit();
     samplePunchValueInput.discardEdit();
@@ -754,8 +770,11 @@ juce::RangedAudioParameter* AudioPluginAudioProcessorEditor::getSelectedApplyToA
 
 void AudioPluginAudioProcessorEditor::selectApplyToAllEffect(juce::RangedAudioParameter& parameter)
 {
+    const auto* definition = PluginParameters::findSampleSpecificParameter(parameter.paramID);
+    const auto effectId = definition != nullptr && definition->effectId != nullptr
+        ? juce::String(definition->effectId) : parameter.paramID;
     for (int parameterIndex = 0; parameterIndex < static_cast<int>(applyToAllParameters.size()); ++parameterIndex)
-        if (applyToAllParameters[(size_t) parameterIndex] == &parameter)
+        if (applyToAllParameters[(size_t) parameterIndex]->paramID == effectId)
         {
             applyToAllEffectSelector.setSelectedId(parameterIndex + 1, juce::dontSendNotification);
             refreshApplyToAllButton();
@@ -770,7 +789,7 @@ void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
     applyToAllButton.setEnabled(canApply);
     applyToAllButton.setTooltip(canApply
         ? juce::String("Apply the selected sample's current ")
-            + parameter->getName(40) + " value to all samples."
+            + applyToAllEffectSelector.getText() + " settings to all samples."
         : "Select or edit a sample-specific effect to apply it to all samples.");
 }
 
@@ -831,7 +850,10 @@ void AudioPluginAudioProcessorEditor::selectSampleGroupForEditing(int groupIndex
 {
     const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
     if (groupIndex != processorRef.getSelectedSampleGroupIndex())
+    {
+        equaliserEditor.endDrag();
         processorRef.setSelectedSampleGroupIndex(groupIndex);
+    }
 
     sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
     if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
@@ -971,6 +993,9 @@ void AudioPluginAudioProcessorEditor::resized()
         effectSelectorLeft - applyToAllGap - applyToAllWidth, 320, applyToAllWidth, 28);
     applyToAllEffectSelector.setBounds(effectSelectorLeft, 320, effectSelectorWidth, 28);
     warpButton.setBounds(23, 18, 170, 110);
+    constexpr int equaliserHeight = 170;
+    constexpr int equaliserWidth = equaliserHeight * 5 / 2;
+    equaliserEditor.setBounds(24, 368, equaliserWidth, equaliserHeight);
 
     const int selectorHeight = SampleGroupSelector::getPreferredHeight();
     sampleGroupSelector.setBounds(0,

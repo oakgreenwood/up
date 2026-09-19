@@ -8,6 +8,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Effects/RzhavProcessor.h"
 #include "Effects/OttProcessor.h"
+#include "Effects/SampleSpectrum.h"
 #include "Midi/MidiNoteActivityState.h"
 #include "PercussionSynthesiser.h"
 #include "Parameters/SampleSpecificParameterState.h"
@@ -74,6 +75,8 @@ public:
     int getLatestMidiNoteOnNote() const noexcept;
     uint32_t getLatestMidiNoteOnGeneration() const noexcept;
 
+    SampleSpectrum& getSampleSpectrum() noexcept { return sampleSpectrum; }
+
     float getSampleSpecificParameterValue(const juce::String& parameterId, float fallbackValue) const;
     void setSampleSpecificParameterValue(const juce::String& parameterId, float value);
     // Message thread only; copies one effect without changing the selected group.
@@ -94,6 +97,7 @@ private:
     RzhavProcessor rzhavProcessor;
     OttProcessor ottProcessor;
     std::atomic<float>* ottAmountParam = nullptr;
+    SampleSpectrum sampleSpectrum;
     PercussionSynthesiser sampler;
     MidiNoteActivityState midiNoteActivity;
     std::vector<PercussionSampleLibrary::SampleGroupInfo> sampleGroups;

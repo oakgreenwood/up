@@ -5,6 +5,7 @@
 #include "SampleLibrary/PercussionSampleLibrary.h"
 
 #include <cmath>
+#include <cstring>
 
 //==============================================================================
 namespace
@@ -82,6 +83,7 @@ void AudioPluginAudioProcessor::updateVoiceSharedState()
             v->setHostBpmParam(hostTempo.getBpmAtomic());
             v->setHostBpmMovingParam(hostTempo.getMovingAtomic());
             v->setSampleSpecificCache(&sampleSpecificCache);
+            v->setSampleSpectrum(&sampleSpectrum);
             v->setWarpCachePrewarmer(warpCachePrewarmer.get());
         }
     }
@@ -180,23 +182,53 @@ bool AudioPluginAudioProcessor::applySampleSpecificParameterToAll(const juce::St
     if (definition == nullptr || parameter == nullptr || sampleGroups.empty() || !std::isfinite(value))
         return false;
 
-    const float normalisedValue = parameter->convertTo0to1(value);
-    const float sampleValue = parameter->convertFrom0to1(normalisedValue);
-    for (int groupIndex = 0; groupIndex < static_cast<int>(sampleGroups.size()); ++groupIndex)
+    // Snapshot every member before publication: multi-parameter effects copy
+    // the complete selected curve through the same registry as scalar effects.
+    const auto belongsToSelectedEffect = [definition] (const auto& member) noexcept
     {
-        const auto& group = sampleGroups[(size_t) groupIndex];
-        definition->writeCache(sampleSpecificCache, group.midiNote, sampleValue);
-        sampleSpecificParameters.setValue(parameterId, group, groupIndex,
-            definition->readCache(sampleSpecificCache, group.midiNote));
-    }
-
-    // The selected parameter may already match, but the other groups still changed.
-    if (parameter->getValue() != normalisedValue)
+        if (std::strcmp(member.id, definition->id) == 0)
+            return true;
+        return definition->effectId != nullptr && member.effectId != nullptr
+            && std::strcmp(member.effectId, definition->effectId) == 0;
+    };
+    std::array<float, PluginParameters::sampleSpecificParameters.size()> values {};
+    for (size_t i = 0; i < PluginParameters::sampleSpecificParameters.size(); ++i)
     {
-        parameter->beginChangeGesture();
-        parameter->setValueNotifyingHost(normalisedValue);
-        parameter->endChangeGesture();
+        const auto& member = PluginParameters::sampleSpecificParameters[i];
+        if (!belongsToSelectedEffect(member))
+            continue;
+        if (auto* memberParameter = parameters.getParameter(member.id))
+        {
+            const float source = std::strcmp(member.id, definition->id) == 0 ? value
+                : getSampleSpecificParameterValue(member.id,
+                    memberParameter->convertFrom0to1(memberParameter->getDefaultValue()));
+            values[i] = memberParameter->convertFrom0to1(memberParameter->convertTo0to1(source));
+        }
     }
+    for (size_t i = 0; i < PluginParameters::sampleSpecificParameters.size(); ++i)
+    {
+        const auto& member = PluginParameters::sampleSpecificParameters[i];
+        if (!belongsToSelectedEffect(member))
+            continue;
+        for (int groupIndex = 0; groupIndex < static_cast<int>(sampleGroups.size()); ++groupIndex)
+        {
+            const auto& group = sampleGroups[(size_t) groupIndex];
+            member.writeCache(sampleSpecificCache, group.midiNote, values[i]);
+            sampleSpecificParameters.setValue(member.id, group, groupIndex,
+                member.readCache(sampleSpecificCache, group.midiNote));
+        }
+        if (auto* memberParameter = parameters.getParameter(member.id))
+        {
+            const float normalisedValue = memberParameter->convertTo0to1(values[i]);
+            if (memberParameter->getValue() != normalisedValue)
+            {
+                memberParameter->beginChangeGesture();
+                memberParameter->setValueNotifyingHost(normalisedValue);
+                memberParameter->endChangeGesture();
+            }
+        }
+    }
+    // The selected parameters may already match, but other groups changed.
     updateHostDisplay(juce::AudioProcessorListener::ChangeDetails{}.withNonParameterStateChanged(true));
     return true;
 }
@@ -272,6 +304,8 @@ void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
 {
     setLatencySamples(FormantShifter::latencySamples + PsolaFormantShifter::latencyForSampleRate(sampleRate));
     sampler.setCurrentPlaybackSampleRate(sampleRate);
+    sampleSpectrum.sampleRate.store(static_cast<float>(SampleEqualiser::validSampleRate(sampleRate)),
+                                    std::memory_order_relaxed);
     rzhavProcessor.prepare(sampleRate);
     ottProcessor.prepare(sampleRate, ottAmountParam != nullptr
         ? ottAmountParam->load(std::memory_order_relaxed) : PluginParameters::ottAmountDefault);
@@ -329,7 +363,12 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     for (const auto metadata : midiMessages)
         midiNoteActivity.handleMidiMessage(metadata.getMessage());
 
+    const int selectedGroup = getSelectedSampleGroupIndex();
+    const int spectrumNote = selectedGroup >= 0 && selectedGroup < static_cast<int>(sampleGroups.size())
+        ? sampleGroups[(size_t) selectedGroup].midiNote : -1;
+    sampleSpectrum.beginBlock(buffer.getNumSamples(), spectrumNote);
     sampler.renderNextBlock(buffer, midiMessages, 0, buffer.getNumSamples());
+    sampleSpectrum.endBlock();
 
     float rzhavAmount = 0.0f;
     if (rzhavParam != nullptr)
@@ -348,6 +387,7 @@ void AudioPluginAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& b
     // This instrument has no input to delay/pass through. Keep bypass silent
     // without JUCE's default assertion that a bypassed processor has zero latency.
     buffer.clear();
+    sampleSpectrum.beginBlock(0, -1);
 }
 
 bool AudioPluginAudioProcessor::hasEditor() const { return true; }
@@ -369,7 +409,7 @@ double AudioPluginAudioProcessor::getTailLengthSeconds() const
     const double rate = std::isfinite(hostRate) && hostRate >= 1000.0 && hostRate <= 768000.0
         ? hostRate : 44100.0;
     return (double) (FormantShifter::tailSamples + PsolaFormantShifter::tailForSampleRate(rate))
-           / rate + OttProcessor::tailSeconds;
+           / rate + SampleEqualiser::tailSeconds + OttProcessor::tailSeconds;
 }
 
 int AudioPluginAudioProcessor::getNumPrograms() { return 1; }

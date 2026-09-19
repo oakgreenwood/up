@@ -3,7 +3,7 @@
 
 namespace PluginParameters
 {
-    const std::array<SampleSpecificParameter, 6> sampleSpecificParameters {{
+    const std::array<SampleSpecificParameter, 14> sampleSpecificParameters {{
         { samplePunchId,
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getPunchAmountForMidiNote(note); },
@@ -36,7 +36,47 @@ namespace PluginParameters
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getPanForMidiNote(note); },
           [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
-          { cache.setPanForMidiNote(note, value); } }
+          { cache.setPanForMidiNote(note, value); } },
+        { sampleEqFrequencyIds[0],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqFrequencyForMidiNote(note, 0); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqFrequencyForMidiNote(note, 0, value); }, sampleEqFrequencyIds[0], "EQ" },
+        { sampleEqGainIds[0],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqGainForMidiNote(note, 0); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqGainForMidiNote(note, 0, value); }, sampleEqFrequencyIds[0], "EQ" },
+        { sampleEqFrequencyIds[1],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqFrequencyForMidiNote(note, 1); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqFrequencyForMidiNote(note, 1, value); }, sampleEqFrequencyIds[0], "EQ" },
+        { sampleEqGainIds[1],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqGainForMidiNote(note, 1); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqGainForMidiNote(note, 1, value); }, sampleEqFrequencyIds[0], "EQ" },
+        { sampleEqFrequencyIds[2],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqFrequencyForMidiNote(note, 2); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqFrequencyForMidiNote(note, 2, value); }, sampleEqFrequencyIds[0], "EQ" },
+        { sampleEqGainIds[2],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqGainForMidiNote(note, 2); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqGainForMidiNote(note, 2, value); }, sampleEqFrequencyIds[0], "EQ" },
+        { sampleEqFrequencyIds[3],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqFrequencyForMidiNote(note, 3); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqFrequencyForMidiNote(note, 3, value); }, sampleEqFrequencyIds[0], "EQ" },
+        { sampleEqGainIds[3],
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEqGainForMidiNote(note, 3); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEqGainForMidiNote(note, 3, value); }, sampleEqFrequencyIds[0], "EQ" }
     }};
 
     const SampleSpecificParameter* findSampleSpecificParameter(const juce::String& parameterId) noexcept
@@ -132,6 +172,19 @@ namespace PluginParameters
                        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f),
                        ottAmountDefault));
 
+        constexpr const char* names[] { "EQ Low Shelf", "EQ Bell 1", "EQ Bell 2", "EQ High Shelf" };
+        for (size_t i = 0; i < sampleEqFrequencyIds.size(); ++i)
+        {
+            juce::NormalisableRange<float> frequencyRange(20.0f, 20000.0f, 0.0f);
+            frequencyRange.setSkewForCentre(1000.0f);
+            layout.add(std::make_unique<juce::AudioParameterFloat>(
+                sampleEqFrequencyIds[i], juce::String(names[i]) + " Frequency", frequencyRange,
+                sampleEqDefaultFrequencies[i], juce::AudioParameterFloatAttributes().withLabel("Hz")));
+            layout.add(std::make_unique<juce::AudioParameterFloat>(
+                sampleEqGainIds[i], juce::String(names[i]) + " Gain",
+                juce::NormalisableRange<float>(-15.0f, 15.0f, 0.1f), 0.0f,
+                juce::AudioParameterFloatAttributes().withLabel("dB")));
+        }
         return layout;
     }
 }

@@ -68,21 +68,73 @@ automation; successful edits select Panorama in Apply to All. Restored missing
 values display `C`. Panorama processes the sound after Mono; see
 [playback](playback-warp-and-transients.md#sample-panorama).
 
+## Sample Equaliser
+
+The EQ panel is 425 x 170 pixels, giving a 2.5:1 width-to-height ratio. Plot
+coordinates reach the black border with no inner padding. Dots on the endpoints
+are clipped by the component edge but remain draggable.
+The transparent graph below the sample controls has a thin black border, no grid
+or frequency/dB labels, and four solid black, unnumbered draggable dots:
+low shelf, bell 1, bell 2, high shelf. Drag horizontally for frequency on a
+logarithmic 20 Hz..20 kHz axis and vertically for -15..+15 dB gain. All Q values
+are fixed at 1.0. Each band defaults to 0 dB; default frequencies are 100, 500,
+2500 and 10000 Hz. The upper graph/filter frequency is limited to 45% of the
+current sample rate when that is below 20 kHz. There are no extra knobs, band
+switches, Q controls or numeric editors.
+
+The black curve displays the combined response of the actual four filters.
+Each dot displays its own band's frequency and gain independently of the
+combined curve, with no connector lines. Vertical dragging directly sets that
+band's gain within -15..+15 dB; the other bands do not affect its position.
+The combined response is clipped to the display range. Coincident dots can
+be selected in turn by repeated clicks. Dragging preserves the initial grab offset
+and sends paired frequency/gain host gestures. Changing samples or closing the
+editor ends the gesture; a drag cannot continue writing into a different sample.
+The EQ has its own 60 Hz message-thread timer; the other editor controls retain
+their 30 Hz timer. The response curve is cached until values, rate or geometry
+change. Frequency/bin coordinates are cached by rate and geometry. The spectrum
+uses two polygon segments per logical pixel, capped at 2048 segments, and keeps
+FFT peaks that fall between segment endpoints when multiple bins share a segment.
+Monotone cubic interpolation smooths the widely spaced low-frequency bins without
+overshooting their measured levels; peak preservation is skipped in these expanded
+segments to avoid steps. A further triangular average spans six display segments
+(normally three pixels) on each side to soften remaining corners. It slightly
+softens narrow peaks and operates on fresh display values without accumulating
+across frames. This smoothing runs only on the message thread and does not change
+the filters or FFT size. Silent unchanged paths do not request further repaints.
+
+The spectrum, filled with opaque `#8E8B8B`, shows only the selected sample group's summed playing voices,
+after EQ and before global Rzhavchina/OTT. A message-thread 2048-point Hann FFT
+combines stereo channel powers without phase cancellation. Windows overlap by
+75%, publishing a fresh complete frame every 512 audio samples after the first
+2048 samples. Only the newest matching packet is transformed each timer tick,
+limiting work to two FFTs per tick. Display levels use a -90..0 dBFS range
+independently of the EQ gain axis and decay at 60 dB per second using elapsed
+time, so the higher refresh rate does not speed up the decay.
+Selection clears the old display; tagged frames from other notes/rates are
+ignored. Spectrum capture stops with the editor closed, and its fixed queue may
+drop display frames without blocking audio. Host blocks above 32768 frames skip
+analysis only; EQ and playback still process the whole block.
+
+EQ appears once in the existing Apply to All dropdown. Clicking a dot or editing
+any EQ parameter selects it; applying EQ copies all eight values as one effect.
+The dots are its only editing controls (no arrow-key EQ editing).
+
 ## Apply To All
 
 `APPLY TO ALL` sits below the sample-specific effects. An effect dropdown sits
 directly to its right, with no value or status text below the button. The dropdown
-lists every parameter in `PluginParameters::sampleSpecificParameters`, using the
-parameter's host-facing name, so newly registered sample-specific effects appear
-automatically. It starts with Gain selected. The collapsed dropdown has no border
+lists the effects registered in `PluginParameters::sampleSpecificParameters`.
+Scalar effects use the parameter's host-facing name; grouped parameters use one
+shared effect entry, so EQ appears once. It starts with Gain selected. The collapsed dropdown has no border
 or background; only its selected effect name and arrow are visible.
 
 Editing a registered sample-specific effect or clicking its knob or effect-name
 label selects that effect in the dropdown. A click selects immediately without
 requiring a value change and gives the editor keyboard focus for arrow controls.
 The user may also choose an effect directly. Clicking the button reads the selected
-effect's current value from the selected sample and copies it to all sample
-groups. Changing samples keeps the effect selection, so the button then uses the
+effect's current settings from the selected sample and copies them to all sample
+groups (all eight frequency/gain values for EQ). Changing samples keeps the effect selection, so the button then uses the
 new sample's current value. Changing a global effect does not affect the dropdown.
 
 The selected effect is also the keyboard target. With no modifier keys, Up or

@@ -34,6 +34,33 @@ older state without `ottAmount`, restore inserts a zero-valued `PARAM` child so
 an already-used instance also returns to bypass instead of retaining its current
 OTT value. See [OTT playback](playback-warp-and-transients.md#global-ott).
 
+## Sample Equaliser Parameters
+
+Eight host parameters are appended after OTT, preserving every existing host
+index: `sampleEqLowFrequency`, `sampleEqLowGain`, `sampleEqBell1Frequency`,
+`sampleEqBell1Gain`, `sampleEqBell2Frequency`, `sampleEqBell2Gain`,
+`sampleEqHighFrequency`, `sampleEqHighGain`. Frequency ranges are 20..20000 Hz
+(continuous); gain ranges are -15..+15 dB in 0.1 dB steps. Default frequencies
+are 100/500/2500/10000 Hz and every gain defaults to zero. Q is a fixed DSP
+constant, 1.0, rather than a parameter.
+
+The 14-entry sample-specific registry includes these eight values alongside
+Gain, Punch, Pitch, Formant, Mono and Panorama. The fixed realtime cache stores
+four frequency and four gain atomic arrays indexed by MIDI root note; writes
+reject non-finite input, clamp frequencies/gains and snap gains to 0.1 dB.
+Selection, host automation with the editor closed, cache mirroring on save and
+sample-specific restore use the same registry. Missing values in older state
+restore the default flat curve, including when loading into an already-used
+instance, through cache rebuilding and selected-parameter synchronization.
+
+Optional `effectId`/`effectName` registry fields group the eight EQ parameters
+under one EQ entry in Apply to All. The processor snapshots all member values
+from the selected group, then copies them through the existing cache/state
+publication path. Publication remains independent per scalar/group, not a
+transaction visible atomically to audio. Existing scalar effects still copy only
+their own value. UI gesture tracking observes all eight host parameters, while
+mapping them to the one EQ menu entry. There are no extra editing controls.
+
 ## Program Metadata
 
 The processor reports one program at index `0`, named `Default`. The nonempty
@@ -55,7 +82,7 @@ Its `ValueTree`, `CriticalSection`, string IDs, and linear scans belong only to
 UI edits and state save/restore; never read it from audio.
 
 For `samplePitchSemitones`, `samplePunch`, `sampleGainDb`,
-`sampleFormant3Semitones`, `sampleMonoAmount`, and `samplePan`:
+`sampleFormant3Semitones`, `sampleMonoAmount`, `samplePan`, and the eight EQ parameters:
 
 - Processor helpers read/write the selected group's stored values.
 - APVTS slider/button attachments report gestures/changes for host automation
@@ -67,7 +94,7 @@ For `samplePitchSemitones`, `samplePunch`, `sampleGainDb`,
   loaded group's MIDI note. It stores pitch semitones, the precomputed pitch
   ratio, Punch, Gain in dB with a precomputed linear multiplier, and
   Formant semitones with a precomputed frequency ratio, plus Mono amount and
-  Panorama position. Voices avoid state-tree access and
+  Panorama position, plus the four EQ frequencies/gains. Voices avoid state-tree access and
   pitch exponentiation; the ratio is computed only when the parameter changes.
 - `getStateInformation` mirrors all cached groups to `SampleSpecificParameterState`
   before writing that child into `parameters.copyState()`. Restore uses
@@ -137,7 +164,7 @@ realtime cache, listener or Apply to All registration. Its host value and old
 per-sample properties may round-trip in state but never affect playback. Old
 LPC values are not reinterpreted as PSOLA values. Missing PSOLA values default to
 zero. Selection, editor-closed automation, state and Apply to All now use the
-six-entry registry: Gain, Punch, Pitch, Formant, Mono, Panorama.
+registry: Gain, Punch, Pitch, Formant, Mono, Panorama and the eight EQ parameters.
 
 Formant 0 retains natural varispeed formants. The surviving PSOLA version keeps
 its existing post-processing: LPC envelope EQ at 95% of the original correction
@@ -153,10 +180,12 @@ and does not modify the sample Gain knob or add saved state. See [Formant playba
 
 `APPLY TO ALL` copies the effect selected in the adjacent dropdown to every loaded
 sample group, including all velocity layers/variations that share that group's
-MIDI note. The value is read from the selected sample when the button is clicked.
+MIDI note. Settings are read from the selected sample when the button is clicked;
+EQ copies all eight values together as an effect.
 Other parameters and the selected group stay as they were. The dropdown is built
 from `PluginParameters::sampleSpecificParameters`, using each APVTS parameter's
-host-facing name; Gain, Punch, Pitch, Formant, Mono, and Panorama are registered.
+host-facing name, or the registry's shared effect name for grouped parameters.
+Gain, Punch, Pitch, Formant, Mono, Panorama and EQ are registered.
 
 The editor observes APVTS change gestures for every registered parameter.
 Selection changes, control refreshes, ordinary host automation, and state restore
@@ -210,6 +239,8 @@ inspection scope and existing render-path blockers.
   drives recognition, processor listeners, selection synchronization, save/restore,
   UI edit tracking, and Apply to All. Do not add effect-specific button logic or
   separate parameter-ID lists.
+- Multi-parameter effects may share `effectId` (the representative parameter ID)
+  and `effectName` in the same registry so Apply to All copies the whole effect.
 - Add the per-note value to `SampleSpecificRealtimeCache`, including initialization
   and any derived DSP values. Prefer preallocated arrays sized to the MIDI-note
   inventory, scalar atomics, or another lock-free handoff. Allocate/resize only

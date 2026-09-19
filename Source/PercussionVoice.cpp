@@ -71,6 +71,7 @@ void PercussionVoice::prepareRealtimeWarpResources(double playbackSampleRate, in
     clearActivePlayback();
     formantShifter.prepare(playbackSampleRate);
     formantColouration.prepare(playbackSampleRate);
+    equaliser.prepare(playbackSampleRate);
     formantDrainSamples = FormantShifter::tailSamples
                           + PsolaFormantShifter::tailForSampleRate(playbackSampleRate);
     realtimeWarpPlayer.prepare(playbackSampleRate, 2, samplesPerBlock);
@@ -88,6 +89,15 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
     formantColouration.setRatio(formantRatio);
     sampleMonoAmount.setTargetValue(getCurrentSampleMonoAmount());
     samplePan.setTargetValue(getCurrentSamplePan());
+    updateEqualiser();
+    // A live edit during the existing formant drain also needs an EQ tail.
+    if (sourceFinished && !equaliserTailReserved && equaliser.hasTail())
+    {
+        formantTailRemaining += static_cast<int>(SampleEqualiser::validSampleRate(getSampleRate())
+                                                 * SampleEqualiser::tailSeconds);
+        equaliserTailReserved = true;
+    }
+    const int spectrumNote = currentSound->getMidiRootNote();
     const bool stereoOutput = outputBuffer.getNumChannels() > 1;
     int rendered = 0;
     while (rendered < numSamples && currentSound != nullptr)
@@ -116,6 +126,10 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
                 right[i] = mid - side;
             }
             applySamplePan(left[i], right[i], stereoOutput);
+            equaliser.process(left[i], right[i]);
+            if (sampleSpectrum != nullptr)
+                sampleSpectrum->add(spectrumNote, startSample + rendered + i,
+                                    left[i], stereoOutput ? right[i] : left[i]);
             for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)
                 outputBuffer.addSample(ch, startSample + rendered + i,
                     ch == 0 ? left[i] : (ch == 1 ? right[i] : 0.5f * (left[i] + right[i])));
@@ -133,7 +147,9 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
 void PercussionVoice::finishSourcePlayback() noexcept
 {
     sourceFinished = true;
-    formantTailRemaining = formantDrainSamples;
+    equaliserTailReserved = equaliser.hasTail();
+    formantTailRemaining = formantDrainSamples + (equaliserTailReserved
+        ? static_cast<int>(SampleEqualiser::validSampleRate(getSampleRate()) * SampleEqualiser::tailSeconds) : 0);
 }
 
 void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
@@ -227,10 +243,13 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
 void PercussionVoice::beginPlayback(float velocity)
 {
     sourceFinished = false;
+    equaliserTailReserved = false;
     formantTailRemaining = 0;
     const float formantRatio = getCurrentFormantRatio();
     formantShifter.reset(formantRatio);
     formantColouration.reset(formantRatio);
+    updateEqualiser(true);
+    equaliser.reset();
     activeWarpCache.reset();
     activeBuffer = nullptr;
     metadata = nullptr;
@@ -364,6 +383,7 @@ void PercussionVoice::beginPlayback(float velocity)
 void PercussionVoice::clearActivePlayback()
 {
     sourceFinished = false;
+    equaliserTailReserved = false;
     formantTailRemaining = 0;
     clearCurrentNote();
 
@@ -886,4 +906,14 @@ int PercussionVoice::getWarpLoopPitchDebounceSampleCount() const noexcept
 {
     const double sampleRate = juce::jmax(1.0, getSampleRate());
     return juce::jmax(1, (int) std::ceil(warpLoopPitchDebounceSeconds * sampleRate));
+}
+
+void PercussionVoice::updateEqualiser(bool immediate) noexcept
+{
+    if (currentSound == nullptr || sampleSpecificCache == nullptr)
+        return;
+    const int note = currentSound->getMidiRootNote();
+    for (int band = 0; band < SampleEqualiser::bandCount; ++band)
+        equaliser.setBand(band, sampleSpecificCache->getEqFrequencyForMidiNote(note, band),
+                         sampleSpecificCache->getEqGainForMidiNote(note, band), immediate);
 }

@@ -14,6 +14,12 @@ SampleSpecificRealtimeCache::SampleSpecificRealtimeCache()
 
 void SampleSpecificRealtimeCache::reset() noexcept
 {
+    for (int band = 0; band < 4; ++band)
+        for (int note = 0; note < midiNoteCount; ++note)
+        {
+            setEqFrequencyForMidiNote(note, band, PluginParameters::sampleEqDefaultFrequencies[(size_t) band]);
+            setEqGainForMidiNote(note, band, 0.0f);
+        }
     for (auto& semitones : formantSemitonesByMidiNote)
         semitones.store(PluginParameters::sampleFormantSemitonesDefault, std::memory_order_relaxed);
     for (auto& ratio : formantRatioByMidiNote)
@@ -180,4 +186,32 @@ float SampleSpecificRealtimeCache::getGainLinearForMidiNote(int midiNote) const 
 {
     return midiNote >= 0 && midiNote < midiNoteCount
         ? gainLinearByMidiNote[(size_t) midiNote].load(std::memory_order_relaxed) : 1.0f;
+}
+
+void SampleSpecificRealtimeCache::setEqFrequencyForMidiNote(int note, int band, float value) noexcept
+{
+    if (note >= 0 && note < midiNoteCount && band >= 0 && band < 4 && std::isfinite(value))
+        eqFrequency[(size_t) band][(size_t) note].store(juce::jlimit(20.0f, 20000.0f, value), std::memory_order_relaxed);
+}
+
+void SampleSpecificRealtimeCache::setEqGainForMidiNote(int note, int band, float value) noexcept
+{
+    if (note >= 0 && note < midiNoteCount && band >= 0 && band < 4 && std::isfinite(value))
+        eqGain[(size_t) band][(size_t) note].store(std::round(juce::jlimit(-15.0f, 15.0f, value) * 10.0f) / 10.0f,
+                                               std::memory_order_relaxed);
+}
+
+float SampleSpecificRealtimeCache::getEqFrequencyForMidiNote(int note, int band) const noexcept
+{
+    if (band < 0 || band >= 4)
+        return 1000.0f;
+    return note >= 0 && note < midiNoteCount
+        ? eqFrequency[(size_t) band][(size_t) note].load(std::memory_order_relaxed)
+        : PluginParameters::sampleEqDefaultFrequencies[(size_t) band];
+}
+
+float SampleSpecificRealtimeCache::getEqGainForMidiNote(int note, int band) const noexcept
+{
+    return note >= 0 && note < midiNoteCount && band >= 0 && band < 4
+        ? eqGain[(size_t) band][(size_t) note].load(std::memory_order_relaxed) : 0.0f;
 }

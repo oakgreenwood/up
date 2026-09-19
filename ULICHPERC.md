@@ -58,6 +58,12 @@ when behavior changes.
   prepared delay/correction rings and a dry fallback for unpitched material.
 - `Source/Effects/RzhavProcessor.cpp`: `Rzhavchina` bit-depth and sample-rate
   reduction effect.
+- `Source/Effects/SampleEqualiser.cpp`: sample-specific four-band stereo EQ,
+  fixed Q, smoothed coefficients and the shared response-curve calculation.
+- `Source/Effects/SampleSpectrum.h`: bounded selected-sample audio capture and
+  an allocation-free SPSC handoff to the editor.
+- `Source/UI/SampleEqualiserEditor.cpp`: four draggable EQ dots, response curve
+  and message-thread stereo spectrum FFT.
 - `Source/Effects/OttProcessor.cpp`: global three-band upward/downward
   compression after Rzhavchina, with a single OTT amount control.
 - `Source/SampleMetadata.cpp`: transient JSON lookup and parsing.

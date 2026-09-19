@@ -20,6 +20,12 @@ Check current scripts and target settings before running commands.
   linked JUCE DSP module; no additional dependency or platform-specific code is
   required for macOS or Windows.
 
+The sample EQ compiles from `Source/Effects/SampleEqualiser.*`, with the fixed
+spectrum handoff in `Source/Effects/SampleSpectrum.h` and graph in
+`Source/UI/SampleEqualiserEditor.*`. These are added to the existing target and
+use the already-linked JUCE DSP module. No dependencies or platform-specific
+code are added for macOS arm64/x86_64/universal or Windows.
+
 ## Build Command
 
 For a macOS Debug plugin build, run `./build.sh` from the repository root. It

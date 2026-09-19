@@ -56,16 +56,27 @@ namespace PluginParameters
     inline constexpr float semitoneInterval = 0.1f;
     inline constexpr float samplePitchSemitonesDefault = 0.0f;
 
+    inline constexpr std::array<const char*, 4> sampleEqFrequencyIds {
+        "sampleEqLowFrequency", "sampleEqBell1Frequency", "sampleEqBell2Frequency", "sampleEqHighFrequency"
+    };
+    inline constexpr std::array<const char*, 4> sampleEqGainIds {
+        "sampleEqLowGain", "sampleEqBell1Gain", "sampleEqBell2Gain", "sampleEqHighGain"
+    };
+    inline constexpr std::array<float, 4> sampleEqDefaultFrequencies { 100.0f, 500.0f, 2500.0f, 10000.0f };
+
     struct SampleSpecificParameter
     {
         const char* id;
         float (*readCache)(const SampleSpecificRealtimeCache&, int midiNote) noexcept;
         void (*writeCache)(SampleSpecificRealtimeCache&, int midiNote, float value) noexcept;
+        // Shared ID/name groups several host parameters into one UI effect.
+        const char* effectId = nullptr;
+        const char* effectName = nullptr;
     };
 
     // Register each sample-specific effect once. These callbacks must be realtime-safe.
     // The registry drives automation, selection, persistence, and Apply to All.
-    extern const std::array<SampleSpecificParameter, 6> sampleSpecificParameters;
+    extern const std::array<SampleSpecificParameter, 14> sampleSpecificParameters;
     const SampleSpecificParameter* findSampleSpecificParameter(const juce::String& parameterId) noexcept;
     bool isSampleSpecificParameterId(const juce::String& parameterId) noexcept;
 

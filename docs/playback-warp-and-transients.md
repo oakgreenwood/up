@@ -9,7 +9,7 @@ parameter storage or realtime-cache publication.
 
 Order: clear output; update BPM/transport via `HostTempoTracker`; publish the
 transport state to `WarpCachePrewarmer`; render the sampler (including each
-voice's PSOLA Formant followed by its LPC EQ/saturation, Mono and Panorama);
+voice's PSOLA Formant followed by its LPC EQ/saturation, Mono, Panorama and sample EQ);
 process global Rzhavchina, then OTT.
 The prewarmer's persistent worker performs all cache rendering and reclamation.
 
@@ -167,6 +167,56 @@ See [parameters and state](parameters-and-state.md) for the 0..1 parameter,
 percentage display, validation and persistence, and
 [the Mono realtime audit](realtime-audio-audit-mono.md) for remaining blockers.
 
+## Sample Equaliser
+
+Each voice owns a four-band stereo `SampleEqualiser`, after Panorama and before
+voice mixing/global effects. Its low shelf, two bell filters and high shelf all
+use Q 1.0, -15..+15 dB gain, and 20..20000 Hz frequencies limited to 45% of the
+host sample rate. The response graph calls the same coefficient factory as DSP.
+JUCE's value-returning `IIR::ArrayCoefficients<double>` factories avoid allocating
+reference-counted coefficient objects on audio.
+
+Voices read eight cached scalar targets per render call. Coefficients are only
+recomputed when targets change; normalized biquad coefficients interpolate over
+10 ms, with independent double-precision channel histories and shared stereo
+coefficients. Generated coefficients must pass finite checks and the second-order
+Jury stability conditions before use. The valid denominator region is convex, so
+the linear ramp between two accepted endpoints remains stable. New notes start at
+their current settings with cleared histories.
+Preparation clears histories and updates the rate; denormal protection is
+provided by the processor. Finite checks prevent invalid input/history or an
+out-of-float-range result from poisoning recursive state. A settled flat EQ
+with cleared history is unity and becomes an exact bypass. Frequency-only edits
+at 0 dB neither calculate coefficients nor run the band. A band returning to
+0 dB continues until its prior IIR state is below a fixed negligible threshold,
+then clears that state and bypasses. No processing latency is added.
+
+An active EQ reserves up to 0.5 seconds of additional zero-input drain after the
+existing formant drain. Enabling EQ during an existing drain reserves this once.
+Hard stops/stealing discard tails as before; the processor's reported tail
+includes the extra allowance. This is a bounded decay window, not an infinite
+IIR tail. Rapid automation and the extra live-voice cost need listening/profiling.
+
+`SampleSpectrum` collects and sums only the selected group's post-EQ voices at
+their actual host-buffer offsets, including tails. It has fixed stereo capture
+storage for 32768 frames and a rolling 2048-frame stereo window. After filling
+the first window, it publishes an independent complete packet every 512 samples
+(75% overlap), tagged with note and sample rate. A free queue slot receives the
+two portions of the ring in chronological order, with four bounded scalar-array
+copies. An atomic SPSC queue of four packets transfers complete frames
+to the editor using release/acquire ownership; a full queue drops the new packet.
+Audio never waits, overwrites a consumer-owned slot, allocates FFT storage or
+performs an FFT. The editor computes stereo-power spectra and applies visual
+decay with its own 60 Hz timer, performing at most two FFTs per tick on the newest
+matching packet. The spectrum polygon has two segments per logical pixel, capped
+at 2048; response and frequency/bin mappings are cached on UI. Closing the editor
+disables capture. Oversized host blocks skip
+analysis without changing playback or MIDI dispatch; zero-length blocks preserve
+partial analysis frames, and bypass/selection/rate changes discard partial data.
+
+See [EQ state](parameters-and-state.md#sample-equaliser-parameters),
+[EQ UI](ui.md#sample-equaliser), and [the EQ audit](realtime-audio-audit-equaliser.md).
+
 ## Sample Panorama
 
 `samplePan` operates after Mono and before voice mixing/global effects, including
@@ -259,7 +309,7 @@ for remaining plugin-wide realtime blockers.
 Formant is the surviving PSOLA option, previously called Formant3. The separate
 LPC-only effect and its leading DSP stage are removed. Signal order is original,
 cached or realtime-warp source -> voice gain/shaping -> PSOLA -> retained LPC
-EQ/saturation -> negative-formant makeup gain -> Mono -> Panorama -> mix/global Rzhavchina -> OTT. The knob spans -12..+12 semitones and
+EQ/saturation -> negative-formant makeup gain -> Mono -> Panorama -> sample EQ -> mix/global Rzhavchina -> OTT. The knob spans -12..+12 semitones and
 keeps the former PSOLA parameter ID for state/automation compatibility; see
 [parameters and state](parameters-and-state.md).
 
@@ -341,7 +391,7 @@ frames, for 6627 total at 48 kHz. Source exhaustion/ADSR completion starts this
 zero-input drain before releasing the voice/cache lease. Hard stops and stealing
 discard pending output; new notes reset both stages. Preparation stops voices
 before preparing sample-rate-dependent storage/tables. `getTailLengthSeconds`
-reports the combined drain. Silent float bypass clears existing output storage
+reports the combined drain plus the sample EQ allowance. Silent float bypass clears existing output storage
 for this no-input instrument, avoiding JUCE's default nonzero-latency assertion.
 
 Voice scratch remains fixed stereo/128 frames and handles variable/tiny/zero

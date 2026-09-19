@@ -25,9 +25,15 @@ public:
     float getFormantSemitonesForMidiNote(int midiNote) const noexcept;
     float getFormantRatioForMidiNote(int midiNote) const noexcept;
 
+    void setEqFrequencyForMidiNote(int note, int band, float value) noexcept;
+    void setEqGainForMidiNote(int note, int band, float value) noexcept;
+    float getEqFrequencyForMidiNote(int note, int band) const noexcept;
+    float getEqGainForMidiNote(int note, int band) const noexcept;
+
 private:
     static constexpr int midiNoteCount = 128;
 
+    std::array<std::array<std::atomic<float>, midiNoteCount>, 4> eqFrequency, eqGain;
     std::array<std::atomic<float>, midiNoteCount> gainDbByMidiNote;
     std::array<std::atomic<float>, midiNoteCount> gainLinearByMidiNote;
     std::array<std::atomic<float>, midiNoteCount> pitchRatioByMidiNote;

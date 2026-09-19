@@ -4,6 +4,8 @@
 
 #include "PercussionSound.h"
 #include "Effects/FormantShifter.h"
+#include "Effects/SampleEqualiser.h"
+#include "Effects/SampleSpectrum.h"
 #include "Effects/PsolaFormantShifter.h"
 #include "Playback/NoteStartDeclicker.h"
 #include "Playback/RealtimeWarpPlayer.h"
@@ -44,7 +46,10 @@ public:
     void setSampleSpecificCache(const SampleSpecificRealtimeCache* cache) noexcept { sampleSpecificCache = cache; }
     void setWarpCachePrewarmer(WarpCachePrewarmer* cache) noexcept { warpCachePrewarmer = cache; }
 
+    void setSampleSpectrum(SampleSpectrum* spectrum) noexcept { sampleSpectrum = spectrum; }
+
 private:
+    void updateEqualiser(bool immediate = false) noexcept;
     void renderSourceBlock(juce::AudioBuffer<float>&, int startSample, int numSamples);
     void finishSourcePlayback() noexcept;
     void beginPlayback(float velocity);
@@ -104,10 +109,13 @@ private:
     NoteStartDeclicker noteStartDeclicker;
     PsolaFormantShifter formantShifter;
     FormantShifter formantColouration;
+    SampleEqualiser equaliser;
+    SampleSpectrum* sampleSpectrum = nullptr;
     int formantDrainSamples = FormantShifter::tailSamples
                               + PsolaFormantShifter::tailForSampleRate(44100.0);
     juce::AudioBuffer<float> voiceScratch { 2, FormantShifter::hopSize };
     bool sourceFinished = false;
+    bool equaliserTailReserved = false;
     int formantTailRemaining = 0;
 
     // Simple ADSR for amplitude (attack/release from PercussionSound)
