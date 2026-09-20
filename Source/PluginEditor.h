@@ -154,6 +154,7 @@ private:
     juce::RangedAudioParameter* getSelectedApplyToAllParameter() const;
     void selectApplyToAllEffect(juce::RangedAudioParameter& parameter);
     void refreshApplyToAllButton();
+    void setSampleEffectsModalVisible(bool shouldBeVisible);
     void parameterValueChanged(int parameterIndex, float newValue) override;
     void parameterGestureChanged(int parameterIndex, bool gestureIsStarting) override;
     float getParameterDefaultValue(const juce::String& parameterId) const;
@@ -164,7 +165,10 @@ private:
     // This reference is provided as a quick way for your editor to
     // access the processor object that created it.
     AudioPluginAudioProcessor& processorRef;
+    std::unique_ptr<juce::Component> sampleEffectsModalSurface;
+    std::unique_ptr<juce::Button> sampleEffectsCloseButton;
     SampleEqualiserEditor equaliserEditor;
+    juce::TextButton editSamplesButton { "EDIT SAMPLES" };
     std::unique_ptr<CustomLookAndFeel> customLNF;
     std::vector<SampleSpecificSliderBinding> sampleSpecificSliderBindings;
     std::vector<SampleSpecificEditBinding> sampleSpecificEditBindings;
@@ -179,6 +183,7 @@ private:
     uint32_t lastMappedMidiNoteOnTimeMs = 0;
     int pendingMidiSampleGroupIndex = -1;
     bool midiSelectionBurstActive = false;
+    bool sampleEffectsModalOpen = false;
     int displayedSampleGroupIndex = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessorEditor)

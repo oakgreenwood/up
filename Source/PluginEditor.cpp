@@ -8,6 +8,45 @@
 namespace
 {
 constexpr uint32_t midiSampleSelectionDebounceMs = 500;
+constexpr int editorPadding = 12;
+
+class SampleEffectsModalSurface final : public juce::Component
+{
+public:
+    SampleEffectsModalSurface()
+    {
+        setName("Sample effects modal");
+        setOpaque(true);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xffd9d9d9));
+    }
+};
+
+class SampleEffectsCloseButton final : public juce::Button
+{
+public:
+    SampleEffectsCloseButton()
+        : juce::Button("Close sample effects")
+    {
+        setTooltip("Close sample effects");
+        setWantsKeyboardFocus(true);
+    }
+
+    void paintButton(juce::Graphics& g, bool isMouseOver, bool isButtonDown) override
+    {
+        const auto colour = juce::Colours::black.withAlpha(isButtonDown ? 0.55f
+                                                        : (isMouseOver ? 0.8f : 1.0f));
+        const auto bounds = getLocalBounds().toFloat().reduced(5.0f);
+        g.setColour(colour);
+        g.drawLine(bounds.getTopLeft().getX(), bounds.getTopLeft().getY(),
+                   bounds.getBottomRight().getX(), bounds.getBottomRight().getY(), 2.0f);
+        g.drawLine(bounds.getTopRight().getX(), bounds.getTopRight().getY(),
+                   bounds.getBottomLeft().getX(), bounds.getBottomLeft().getY(), 2.0f);
+    }
+};
 
 int getArrowDirection(const juce::KeyPress& key)
 {
@@ -469,6 +508,9 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     addAndMakeVisible(ottLabel);
     configureKnobLabel(ottLabel, "OTT");
 
+    sampleEffectsModalSurface = std::make_unique<SampleEffectsModalSurface>();
+    addAndMakeVisible(*sampleEffectsModalSurface);
+
     addAndMakeVisible(sampleGainSlider);
     sampleGainSlider.setComponentID(PluginUI::sampleGainSliderId);
     sampleGainSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
@@ -617,6 +659,21 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     };
     addAndMakeVisible(sampleGroupSelector);
 
+    addAndMakeVisible(editSamplesButton);
+    editSamplesButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
+    editSamplesButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    editSamplesButton.onClick = [this]
+    {
+        setSampleEffectsModalVisible(true);
+    };
+
+    sampleEffectsCloseButton = std::make_unique<SampleEffectsCloseButton>();
+    addAndMakeVisible(*sampleEffectsCloseButton);
+    sampleEffectsCloseButton->onClick = [this]
+    {
+        setSampleEffectsModalVisible(false);
+    };
+
     for (const auto& definition : PluginParameters::sampleSpecificParameters)
         if (auto* parameter = processorRef.parameters.getParameter(definition.id))
         {
@@ -646,6 +703,8 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 
     refreshSampleSpecificControls();
     refreshApplyToAllButton();
+    resized();
+    setSampleEffectsModalVisible(false);
     startTimerHz(30);
 }
 
@@ -664,6 +723,9 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
         binding.parameter->removeListener(this);
     sampleGroupSelector.onSelectedIndexChanged = {};
     applyToAllEffectSelector.onChange = {};
+    editSamplesButton.onClick = {};
+    if (sampleEffectsCloseButton != nullptr)
+        sampleEffectsCloseButton->onClick = {};
 
     // Clear L&F pointers before destroying the owned look and feel.
     rzhavSlider.setLookAndFeel(nullptr);
@@ -793,10 +855,55 @@ void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
         : "Select or edit a sample-specific effect to apply it to all samples.");
 }
 
+void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBeVisible)
+{
+    sampleEffectsModalOpen = shouldBeVisible;
+    editSamplesButton.setVisible(!shouldBeVisible);
+
+    if (!shouldBeVisible)
+        equaliserEditor.endDrag();
+
+    if (sampleEffectsModalSurface != nullptr)
+        sampleEffectsModalSurface->setVisible(shouldBeVisible);
+    if (sampleEffectsCloseButton != nullptr)
+        sampleEffectsCloseButton->setVisible(shouldBeVisible);
+
+    juce::Component* const sampleEffectComponents[] = {
+        &sampleGainSlider, &sampleGainValueInput, &sampleGainLabel,
+        &samplePunchSlider, &samplePunchValueInput, &samplePunchLabel,
+        &samplePitchSlider, &samplePitchValueInput, &samplePitchLabel,
+        &sampleFormantSlider, &sampleFormantValueInput, &sampleFormantLabel,
+        &sampleMonoSlider, &sampleMonoValueInput, &sampleMonoLabel,
+        &samplePanSlider, &samplePanValueInput, &samplePanLabel,
+        &equaliserEditor, &applyToAllButton, &applyToAllEffectSelector
+    };
+    for (auto* component : sampleEffectComponents)
+        component->setVisible(shouldBeVisible);
+
+    juce::Component* const globalEffectComponents[] = {
+        &rzhavSlider, &rzhavLabel,
+        &sustainSlider, &sustainLabel,
+        &ottSlider, &ottLabel,
+        &warpButton
+    };
+    for (auto* component : globalEffectComponents)
+        component->setVisible(!shouldBeVisible);
+
+    repaint();
+}
+
 void AudioPluginAudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
 {
     if (!event.mods.isLeftButtonDown())
         return;
+
+    // Child controls receive their own mouse events. Only an actual click on
+    // the otherwise empty editor background dismisses the modal.
+    if (sampleEffectsModalOpen && event.eventComponent == this)
+    {
+        setSampleEffectsModalVisible(false);
+        return;
+    }
 
     for (const auto& binding : sampleSpecificSliderBindings)
         if (event.eventComponent == binding.slider || event.eventComponent == binding.label)
@@ -972,34 +1079,65 @@ void AudioPluginAudioProcessorEditor::resized()
     placeKnobWithLabel(rzhavSlider, rzhavLabel, 0, 222);
     placeKnobWithLabel(sustainSlider, sustainLabel, 81, 222);
     placeKnobWithLabel(ottSlider, ottLabel, 162, 222);
+
+    const int modalHeight = getHeight() * 7 / 10;
+    const auto modalBounds = juce::Rectangle<int>(
+        editorPadding,
+        getHeight() - editorPadding - modalHeight,
+        juce::jmax(0, getWidth() - editorPadding * 2),
+        modalHeight);
+    if (sampleEffectsModalSurface != nullptr)
+        sampleEffectsModalSurface->setBounds(modalBounds);
+
+    const int modalKnobCentreY = modalBounds.getY() + 68;
     placeKnobWithValueAndLabel(sampleGainSlider, sampleGainLabel, sampleGainValueInput,
-                               getWidth() - labelWidth - 429, 222);
+                               getWidth() - labelWidth - 429, modalKnobCentreY);
     placeKnobWithValueAndLabel(samplePunchSlider, samplePunchLabel, samplePunchValueInput,
-                               getWidth() - labelWidth - 348, 222);
+                               getWidth() - labelWidth - 348, modalKnobCentreY);
     placeKnobWithValueAndLabel(samplePitchSlider, samplePitchLabel, samplePitchValueInput,
-                               getWidth() - labelWidth - 267, 222);
+                               getWidth() - labelWidth - 267, modalKnobCentreY);
     placeKnobWithValueAndLabel(sampleFormantSlider, sampleFormantLabel, sampleFormantValueInput,
-                               getWidth() - labelWidth - 186, 222);
+                               getWidth() - labelWidth - 186, modalKnobCentreY);
     placeKnobWithValueAndLabel(sampleMonoSlider, sampleMonoLabel, sampleMonoValueInput,
-                               getWidth() - labelWidth - 105, 222);
+                               getWidth() - labelWidth - 105, modalKnobCentreY);
     placeKnobWithValueAndLabel(samplePanSlider, samplePanLabel, samplePanValueInput,
-                               getWidth() - labelWidth - 24, 222);
+                               getWidth() - labelWidth - 24, modalKnobCentreY);
     constexpr int applyToAllWidth = 150;
     constexpr int effectSelectorWidth = 116;
     constexpr int applyToAllGap = 8;
     constexpr int applyToAllRight = 24;
     const int effectSelectorLeft = getWidth() - applyToAllRight - effectSelectorWidth;
     applyToAllButton.setBounds(
-        effectSelectorLeft - applyToAllGap - applyToAllWidth, 320, applyToAllWidth, 28);
-    applyToAllEffectSelector.setBounds(effectSelectorLeft, 320, effectSelectorWidth, 28);
+        effectSelectorLeft - applyToAllGap - applyToAllWidth,
+        modalBounds.getY() + 152, applyToAllWidth, 28);
+    applyToAllEffectSelector.setBounds(
+        effectSelectorLeft, modalBounds.getY() + 152, effectSelectorWidth, 28);
     warpButton.setBounds(23, 18, 170, 110);
     constexpr int equaliserHeight = 170;
     constexpr int equaliserWidth = equaliserHeight * 5 / 2;
-    equaliserEditor.setBounds(24, 368, equaliserWidth, equaliserHeight);
+    equaliserEditor.setBounds(24, modalBounds.getY() + 198, equaliserWidth, equaliserHeight);
+
+    constexpr int closeButtonSize = 26;
+    constexpr int closeButtonGap = 6;
+    if (sampleEffectsCloseButton != nullptr)
+        sampleEffectsCloseButton->setBounds(
+            modalBounds.getRight() - closeButtonSize,
+            modalBounds.getY() - closeButtonSize - closeButtonGap,
+            closeButtonSize,
+            closeButtonSize);
 
     const int selectorHeight = SampleGroupSelector::getPreferredHeight();
-    sampleGroupSelector.setBounds(0,
-                                  getHeight() - selectorHeight,
-                                  getWidth(),
+    sampleGroupSelector.setBounds(editorPadding,
+                                  getHeight() - editorPadding - selectorHeight,
+                                  juce::jmax(0, getWidth() - editorPadding * 2),
                                   selectorHeight);
+
+    constexpr int editSamplesButtonWidth = 150;
+    constexpr int editSamplesButtonHeight = 26;
+    constexpr int editSamplesButtonGap = 8;
+    editSamplesButton.setBounds(
+        (getWidth() - editSamplesButtonWidth) / 2,
+        sampleGroupSelector.getY() - editSamplesButtonHeight - editSamplesButtonGap,
+        editSamplesButtonWidth,
+        editSamplesButtonHeight);
 }

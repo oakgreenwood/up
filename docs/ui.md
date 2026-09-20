@@ -5,6 +5,24 @@ attachments, automation, or persistence, see [parameters and state](parameters-a
 Audio/message-thread activity handoff changes require the
 [realtime audio audit](../.agents/skills/realtime-audio-audit/SKILL.md).
 
+## Sample Effects Modal
+
+Sample-specific controls are hidden from the main editor until the centred
+`EDIT SAMPLES` button above the sample-group sticks is clicked. The modal uses
+an opaque `#D9D9D9` background, spans the editor width inside the existing
+12-pixel padding, is anchored to the bottom of that padded area, and occupies
+70% of the editor height. It contains Gain, Punch, Pitch, Formant, Mono,
+Panorama, the sample equaliser, and Apply to All.
+
+`EDIT SAMPLES` is hidden while the modal is open. The sample-group sticks use
+the same 12-pixel left, right and bottom padding as the modal, so their lower
+edge aligns with the bottom of the open modal.
+
+The modal does not dim the rest of the editor. Global effect controls are hidden
+while it is open. A click on empty editor background outside the modal closes
+it, while an outside interactive child control keeps it open. The cross icon
+just above the modal's top-right corner also closes it.
+
 ## Global OTT
 
 The global `OTT` knob sits immediately right of Pomyatost, with the existing
