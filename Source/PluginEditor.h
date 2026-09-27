@@ -7,6 +7,7 @@
 #include "PluginProcessor.h"
 #include "UI/SampleGroupSelector.h"
 #include "UI/SampleEqualiserEditor.h"
+#include "UI/NoiseWaveformEditor.h"
 
 class CustomLookAndFeel;
 
@@ -80,6 +81,19 @@ public:
     ImageKnobSlider rzhavSlider;
     ImageKnobSlider sustainSlider;
     ImageKnobSlider ottSlider;
+    juce::ComboBox noiseSourceSelector;
+    juce::String displayedImportedNoiseName;
+    juce::Slider noiseGainSlider;
+    juce::Label noiseLabel;
+    juce::Label noiseSourceLabel, noiseTriggerLabel, noiseFollowLabel;
+    juce::ComboBox noiseTriggerSelector;
+    juce::Slider noiseModulationSlider;
+    juce::Label noiseModulationLabel;
+    ImageKnobSlider noiseReleaseSlider;
+    juce::Label noiseReleaseLabel;
+    NumericValueInput noiseReleaseValueInput {
+        noiseReleaseSlider, "Noise release value", NumericValueInput::Validation::signedDecimal, " ms"
+    };
     ImageKnobSlider sampleGainSlider;
     ImageKnobSlider samplePunchSlider;
     ImageKnobSlider samplePitchSlider;
@@ -123,6 +137,11 @@ public:
     // std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sampleRateAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sustainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> ottAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> noiseSourceAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> noiseGainAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> noiseTriggerAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> noiseModulationAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> noiseReleaseAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sampleGainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePunchAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> samplePitchAttachment;
@@ -168,6 +187,8 @@ private:
     std::unique_ptr<juce::Component> sampleEffectsModalSurface;
     std::unique_ptr<juce::Button> sampleEffectsCloseButton;
     SampleEqualiserEditor equaliserEditor;
+    NoiseWaveformEditor noiseWaveform;
+    std::unique_ptr<juce::Component> noisePanelSurface;
     juce::TextButton editSamplesButton { "EDIT SAMPLES" };
     std::unique_ptr<CustomLookAndFeel> customLNF;
     std::vector<SampleSpecificSliderBinding> sampleSpecificSliderBindings;
@@ -179,10 +200,6 @@ private:
     bool ignoreSampleSpecificEdits = false;
     std::array<int, AudioPluginAudioProcessor::midiNoteActivityCount> sampleGroupIndexByMidiNote {};
     std::array<uint32_t, AudioPluginAudioProcessor::midiNoteActivityCount> observedMidiNoteActivityGenerations {};
-    uint32_t observedLatestMidiNoteOnGeneration = 0;
-    uint32_t lastMappedMidiNoteOnTimeMs = 0;
-    int pendingMidiSampleGroupIndex = -1;
-    bool midiSelectionBurstActive = false;
     bool sampleEffectsModalOpen = false;
     int displayedSampleGroupIndex = -1;
 

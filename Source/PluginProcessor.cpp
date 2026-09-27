@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 //==============================================================================
 namespace
@@ -16,6 +17,10 @@ namespace
     const juce::Identifier selectedSampleGroupIndexProperty { "selectedSampleGroupIndex" };
     const juce::Identifier selectedSampleGroupNoteIndexProperty { "selectedSampleGroupNoteIndex" };
     const juce::Identifier selectedSampleGroupPitchIndexProperty { "selectedSampleGroupPitchIndex" };
+    const juce::Identifier noiseSourceNameProperty { "noiseSourceName" };
+    const juce::Identifier noiseUsesImportedProperty { "noiseUsesImportedSource" };
+    const juce::Identifier noiseTriggerNoteProperty { "noiseTriggerNoteIndex" };
+    const juce::Identifier noiseTriggerPitchProperty { "noiseTriggerPitchIndex" };
 
     int findSampleGroupIndexForKey(const std::vector<PercussionSampleLibrary::SampleGroupInfo>& groups,
                                    int noteIndex,
@@ -40,6 +45,13 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
 
     rzhavParam = parameters.getRawParameterValue(PluginParameters::rzhavchinaId);
     ottAmountParam = parameters.getRawParameterValue(PluginParameters::ottAmountId);
+    noiseSourceParam = parameters.getRawParameterValue(PluginParameters::noiseSourceId);
+    noiseGainParam = parameters.getRawParameterValue(PluginParameters::noiseGainDbId);
+    noiseModulationParam = parameters.getRawParameterValue(PluginParameters::noiseModulationId);
+    noiseTriggerParam = parameters.getRawParameterValue(PluginParameters::noiseTriggerId);
+    noiseReleaseParam = parameters.getRawParameterValue(PluginParameters::noiseReleaseMsId);
+    noiseStartParam = parameters.getRawParameterValue(PluginParameters::noiseStartId);
+    noiseEndParam = parameters.getRawParameterValue(PluginParameters::noiseEndId);
     sustainShortenParam = parameters.getRawParameterValue(PluginParameters::sustainShortenId);
     warpParamRaw = parameters.getRawParameterValue(PluginParameters::warpEnabledId);
 
@@ -48,6 +60,8 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     DBG("Added " << sampler.getNumVoices() << " sampler voices");
 
     PercussionSampleLibrary::loadEmbeddedSamples(sampler, percussionOriginalBpm, &sampleGroups);
+    for (const auto& group : sampleGroups)
+        midiNoteActivity.enableSampleNote(group.midiNote);
     clampSelectedSampleGroupIndex();
     rebuildSampleSpecificCache();
     warpCachePrewarmer = std::make_unique<WarpCachePrewarmer>(
@@ -84,6 +98,7 @@ void AudioPluginAudioProcessor::updateVoiceSharedState()
             v->setHostBpmMovingParam(hostTempo.getMovingAtomic());
             v->setSampleSpecificCache(&sampleSpecificCache);
             v->setSampleSpectrum(&sampleSpectrum);
+            v->setNoiseSidechain(&noiseSidechain);
             v->setWarpCachePrewarmer(warpCachePrewarmer.get());
         }
     }
@@ -127,11 +142,6 @@ uint32_t AudioPluginAudioProcessor::getMidiNoteActivityGeneration(int midiNote) 
 int AudioPluginAudioProcessor::getLatestMidiNoteOnNote() const noexcept
 {
     return midiNoteActivity.getLatestNoteOnMidiNote();
-}
-
-uint32_t AudioPluginAudioProcessor::getLatestMidiNoteOnGeneration() const noexcept
-{
-    return midiNoteActivity.getLatestNoteOnGeneration();
 }
 
 float AudioPluginAudioProcessor::getSampleSpecificParameterValue(const juce::String& parameterId,
@@ -307,6 +317,8 @@ void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     sampleSpectrum.sampleRate.store(static_cast<float>(SampleEqualiser::validSampleRate(sampleRate)),
                                     std::memory_order_relaxed);
     rzhavProcessor.prepare(sampleRate);
+    backgroundNoise.prepare(sampleRate);
+    noiseSidechain.prepare(sampleRate);
     ottProcessor.prepare(sampleRate, ottAmountParam != nullptr
         ? ottAmountParam->load(std::memory_order_relaxed) : PluginParameters::ottAmountDefault);
     midiNoteActivity.reset();
@@ -321,6 +333,8 @@ void AudioPluginAudioProcessor::releaseResources()
 {
     rzhavProcessor.reset();
     ottProcessor.reset();
+    backgroundNoise.reset();
+    noiseSidechain.reset();
 }
 
 bool AudioPluginAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -360,23 +374,89 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         && warpCachePrewarmer->update(warpEnabledNow, tempo.transportRunning, tempo.hostBpmAvailable))
         hostTempo.resetMotion();
 
-    for (const auto metadata : midiMessages)
-        midiNoteActivity.handleMidiMessage(metadata.getMessage());
-
     const int selectedGroup = getSelectedSampleGroupIndex();
     const int spectrumNote = selectedGroup >= 0 && selectedGroup < static_cast<int>(sampleGroups.size())
         ? sampleGroups[(size_t) selectedGroup].midiNote : -1;
     sampleSpectrum.beginBlock(buffer.getNumSamples(), spectrumNote);
-    sampler.renderNextBlock(buffer, midiMessages, 0, buffer.getNumSamples());
+
+    const float rawTrigger = noiseTriggerParam->load(std::memory_order_relaxed);
+    const int trigger = std::isfinite(rawTrigger) ? static_cast<int>(std::round(juce::jlimit(
+        0.0f, static_cast<float>(noiseTriggerGroups.size()), rawTrigger))) : 0;
+    const int triggerNote = trigger > 0 ? noiseTriggerGroups[static_cast<size_t>(trigger - 1)].midiNote : -1;
+    noiseSidechain.setParameters(noiseModulationParam->load(std::memory_order_relaxed),
+                                PluginParameters::noiseAttackMsDefault,
+                                noiseReleaseParam->load(std::memory_order_relaxed),
+                                PluginParameters::noiseRiseDbDefault);
+    const float source = noiseSourceParam->load(std::memory_order_relaxed);
+    const float noiseGain = noiseGainParam->load(std::memory_order_relaxed);
+    // Observe gesture completion before reading its final parameter targets.
+    // All chunks in this host block use the same gesture/trim snapshot.
+    const auto noiseTrimGesture = backgroundNoise.getTrimGestureState();
+    const float noiseStart = noiseStartParam->load(std::memory_order_relaxed);
+    const float noiseEnd = noiseEndParam->load(std::memory_order_relaxed);
+    const float rzhavAmount = rzhavParam->load(std::memory_order_relaxed);
+    const float ottAmount = ottAmountParam->load(std::memory_order_relaxed);
+
+    // Stream events exactly once. Passing the whole MIDI buffer to JUCE for
+    // each chunk would also dispatch events belonging to subsequent chunks.
+    auto midi = midiMessages.cbegin();
+    const auto midiEnd = midiMessages.cend();
+    int lastMidiRenderPosition = 0;
+    bool firstMidiInterval = true;
+    const auto eventPosition = [&]() noexcept
+    {
+        const int position = juce::jlimit(0, buffer.getNumSamples(), (*midi).samplePosition);
+        // Preserve JUCE's default 32-frame event coalescing, independently of
+        // our scratch-buffer boundaries. The first rendered interval is exact.
+        return position - lastMidiRenderPosition < (firstMidiInterval ? 1 : 32)
+            ? lastMidiRenderPosition : position;
+    };
+    const auto dispatch = [&]
+    {
+        const auto metadata = *midi++;
+        // Synthesiser ignores SysEx. Reject it before constructing an owning
+        // MidiMessage, so long messages cannot allocate on the audio thread.
+        if (metadata.numBytes > 0 && metadata.numBytes <= 3)
+        {
+            const auto message = metadata.getMessage();
+            midiNoteActivity.handleMidiMessage(message);
+            sampler.dispatchMidi(message);
+        }
+    };
+
+    for (int start = 0; start < buffer.getNumSamples();)
+    {
+        const int count = juce::jmin(NoiseSidechain::capacity, buffer.getNumSamples() - start);
+        const int end = start + count;
+        noiseSidechain.beginBlock(start, count, triggerNote);
+        int rendered = start;
+        while (midi != midiEnd && eventPosition() < end)
+        {
+            const int position = eventPosition();
+            sampler.renderAudioRange(buffer, rendered, position - rendered);
+            rendered = juce::jmax(rendered, position);
+            if (position > lastMidiRenderPosition)
+            {
+                firstMidiInterval = false;
+                lastMidiRenderPosition = position;
+            }
+            dispatch();
+        }
+        sampler.renderAudioRange(buffer, rendered, end - rendered);
+        const auto* modulation = noiseSidechain.finishBlock();
+        // A non-owning view uses JUCE's inline channel-pointer storage (<=2
+        // channels). It never allocates/resizes sample storage on audio.
+        juce::AudioBuffer<float> chunk(buffer.getArrayOfWritePointers(),
+                                       juce::jmin(2, buffer.getNumChannels()), start, count);
+        rzhavProcessor.process(chunk, rzhavAmount);
+        ottProcessor.process(chunk, ottAmount);
+        backgroundNoise.process(chunk, source, noiseGain, modulation, noiseStart, noiseEnd, noiseTrimGesture);
+        start = end;
+    }
+    // Preserve state updates for zero-length blocks and end-of-block events.
+    while (midi != midiEnd)
+        dispatch();
     sampleSpectrum.endBlock();
-
-    float rzhavAmount = 0.0f;
-    if (rzhavParam != nullptr)
-        rzhavAmount = rzhavParam->load(std::memory_order_relaxed);
-
-    rzhavProcessor.process(buffer, rzhavAmount);
-    ottProcessor.process(buffer, ottAmountParam != nullptr
-        ? ottAmountParam->load(std::memory_order_relaxed) : PluginParameters::ottAmountDefault);
 }
 
 //==============================================================================
@@ -388,6 +468,8 @@ void AudioPluginAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& b
     // without JUCE's default assertion that a bypassed processor has zero latency.
     buffer.clear();
     sampleSpectrum.beginBlock(0, -1);
+    backgroundNoise.reset();
+    noiseSidechain.reset();
 }
 
 bool AudioPluginAudioProcessor::hasEditor() const { return true; }
@@ -405,6 +487,9 @@ bool AudioPluginAudioProcessor::producesMidi() const { return false; }
 bool AudioPluginAudioProcessor::isMidiEffect() const { return false; }
 double AudioPluginAudioProcessor::getTailLengthSeconds() const
 {
+    const float noiseGain = noiseGainParam->load(std::memory_order_relaxed);
+    if (std::isfinite(noiseGain) && noiseGain > PluginParameters::noiseGainDbSilence)
+        return std::numeric_limits<double>::infinity();
     const double hostRate = getSampleRate();
     const double rate = std::isfinite(hostRate) && hostRate >= 1000.0 && hostRate <= 768000.0
         ? hostRate : 44100.0;
@@ -423,10 +508,41 @@ void AudioPluginAudioProcessor::changeProgramName(int index, const juce::String&
 
 //==============================================================================
 
+void AudioPluginAudioProcessor::importNoiseFile(const juce::File& file)
+{
+    // Called by the editor. The worker owns all file access and decoding.
+    backgroundNoise.importFile(file);
+    const auto setValue = [this] (const char* id, float value)
+    {
+        auto* parameter = parameters.getParameter(id);
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost(parameter->convertTo0to1(value));
+        parameter->endChangeGesture();
+    };
+    setValue(PluginParameters::noiseStartId, 0.0f);
+    setValue(PluginParameters::noiseEndId, 1.0f);
+    setValue(PluginParameters::noiseSourceId, static_cast<float>(BackgroundNoisePlayer::importedSourceIndex()));
+    updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withNonParameterStateChanged(true));
+}
+
 void AudioPluginAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     storeSampleSpecificCache();
     auto state = parameters.copyState();
+    const auto noiseNames = BackgroundNoisePlayer::getSourceNames();
+    const auto noiseState = state.getChildWithProperty("id", PluginParameters::noiseSourceId);
+    state.setProperty(noiseUsesImportedProperty,
+        static_cast<int>(noiseState.getProperty("value", 0)) == BackgroundNoisePlayer::importedSourceIndex(), nullptr);
+    backgroundNoise.writeImportedState(state);
+    state.setProperty(noiseSourceNameProperty,
+                      noiseNames[static_cast<int>(noiseState.getProperty("value", 0))], nullptr);
+    const auto triggerState = state.getChildWithProperty("id", PluginParameters::noiseTriggerId);
+    const int triggerIndex = static_cast<int>(triggerState.getProperty("value", 0)) - 1;
+    const bool validTrigger = triggerIndex >= 0 && triggerIndex < static_cast<int>(noiseTriggerGroups.size());
+    state.setProperty(noiseTriggerNoteProperty, validTrigger
+        ? noiseTriggerGroups[static_cast<size_t>(triggerIndex)].noteIndex : -1, nullptr);
+    state.setProperty(noiseTriggerPitchProperty, validTrigger
+        ? noiseTriggerGroups[static_cast<size_t>(triggerIndex)].pitchIndex : -1, nullptr);
     const int selectedIndex = getSelectedSampleGroupIndex();
     state.setProperty(selectedSampleGroupIndexProperty, selectedIndex, nullptr);
 
@@ -459,6 +575,59 @@ void AudioPluginAudioProcessor::setStateInformation(const void* data, int sizeIn
                 ottState.setProperty("value", PluginParameters::ottAmountDefault, nullptr);
                 restoredState.appendChild(ottState, nullptr);
             }
+            // Old projects must load silent even into a previously used instance.
+            const std::pair<const char*, float> noiseDefaults[] {
+                { PluginParameters::noiseSourceId, 0.0f },
+                { PluginParameters::noiseGainDbId, PluginParameters::noiseGainDbSilence },
+                { PluginParameters::noiseModulationId, 0.0f },
+                { PluginParameters::noiseTriggerId, 0.0f },
+                { PluginParameters::noiseAttackMsId, PluginParameters::noiseAttackMsDefault },
+                { PluginParameters::noiseReleaseMsId, PluginParameters::noiseReleaseMsDefault },
+                { PluginParameters::noiseStartId, 0.0f },
+                { PluginParameters::noiseEndId, 1.0f },
+                { PluginParameters::noiseRiseDbId, PluginParameters::noiseRiseDbDefault }
+            };
+            for (const auto& [id, defaultValue] : noiseDefaults)
+            {
+                if (!restoredState.getChildWithProperty("id", id).isValid())
+                {
+                    juce::ValueTree noiseState("PARAM");
+                    noiseState.setProperty("id", id, nullptr);
+                    noiseState.setProperty("value", defaultValue, nullptr);
+                    restoredState.appendChild(noiseState, nullptr);
+                }
+            }
+            // Preserve source identity when files added in a later build reorder choices.
+            if (restoredState.hasProperty(noiseSourceNameProperty))
+            {
+                const int noiseIndex = static_cast<bool>(restoredState.getProperty(noiseUsesImportedProperty, false))
+                    ? BackgroundNoisePlayer::importedSourceIndex()
+                    : BackgroundNoisePlayer::getSourceNames().indexOf(
+                        restoredState.getProperty(noiseSourceNameProperty).toString());
+                auto sourceState = restoredState.getChildWithProperty("id", PluginParameters::noiseSourceId);
+                sourceState.setProperty("value", juce::jmax(0, noiseIndex), nullptr);
+                if (noiseIndex < 0)
+                {
+                    auto gainState = restoredState.getChildWithProperty("id", PluginParameters::noiseGainDbId);
+                    gainState.setProperty("value", PluginParameters::noiseGainDbSilence, nullptr);
+                }
+            }
+            if (restoredState.hasProperty(noiseTriggerNoteProperty))
+            {
+                const int note = static_cast<int>(restoredState.getProperty(noiseTriggerNoteProperty, -1));
+                const int index = findSampleGroupIndexForKey(noiseTriggerGroups, note,
+                    static_cast<int>(restoredState.getProperty(noiseTriggerPitchProperty, -1)));
+                auto triggerState = restoredState.getChildWithProperty("id", PluginParameters::noiseTriggerId);
+                triggerState.setProperty("value", index + 1, nullptr);
+                if (note >= 0 && index < 0)
+                {
+                    auto depthState = restoredState.getChildWithProperty("id", PluginParameters::noiseModulationId);
+                    depthState.setProperty("value", 0.0f, nullptr);
+                }
+            }
+            backgroundNoise.restoreImportedState(restoredState);
+            // The noise loader owns this large payload, not APVTS's live tree.
+            restoredState.removeChild(restoredState.getChildWithName("ImportedNoise"), nullptr);
             parameters.replaceState(restoredState);
 
             int restoredSelectedIndex = findSampleGroupIndexForKey(

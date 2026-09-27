@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "NoteStartDeclicker.h"
+#include "NoiseTrigger.h"
 #include "SustainTailShaper.h"
 
 struct SampleMetadata;
@@ -39,5 +40,7 @@ public:
                   float sustainAmount,
                   float sustainMakeupGain,
                   SustainTailShaper& sustainShaper,
-                  NoteStartDeclicker& declicker);
+                  NoteStartDeclicker& declicker,
+                  NoiseTriggerTracker& noiseTrigger,
+                  float* noiseHits);
 };

@@ -110,7 +110,9 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                                                        float sustainMakeupGain,
                                                        double pitchScaleMultiplier,
                                                        SustainTailShaper& sustainShaper,
-                                                       NoteStartDeclicker& declicker)
+                                                       NoteStartDeclicker& declicker,
+                                                       NoiseTriggerTracker& noiseTrigger,
+                                                       float* noiseHits)
 {
     Result result;
 
@@ -165,6 +167,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                     if (loopWhileHeld)
                     {
                         resetForLoop(activeSourceSampleRate, playbackSampleRate, sustainShaper);
+                        noiseTrigger.restartLoop();
                         continue;
                     }
 
@@ -205,6 +208,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                 if (loopWhileHeld)
                 {
                     resetForLoop(activeSourceSampleRate, playbackSampleRate, sustainShaper);
+                    noiseTrigger.restartLoop();
                     continue;
                 }
 
@@ -249,6 +253,8 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                 result.finished = true;
                 return result;
             }
+
+            noiseHits[produced + i] = noiseTrigger.advance(outputTimeSec, gain);
 
             const float inL = outputScratch.getSample(0, i);
             const float inR = (outNumChans > 1) ? outputScratch.getSample(juce::jmin(1, channels - 1), i) : inL;

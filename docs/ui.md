@@ -5,6 +5,90 @@ attachments, automation, or persistence, see [parameters and state](parameters-a
 Audio/message-thread activity handoff changes require the
 [realtime audio audit](../.agents/skills/realtime-audio-audit/SKILL.md).
 
+## Background Noise
+
+The global page groups noise in a `NOISE RYTHM` panel, following the supplied
+reference's placement, with a transparent panel over the editor background, a
+black heading/border, #6B6D68 uppercase captions, black waveform/text and
+#8E8B8B slider tracks.
+Inside the frame, controls run vertically: SOURCE dropdown, waveform, TRIGGER
+dropdown, VOLUME, then PUMP/FOLLOW. A single Release knob sits centered along
+the bottom with an editable integer-ms readout. Attack and Rise controls have
+been removed. The other global controls remain to its left.
+The panel is two-thirds of its former width (399 px in the 900 px editor),
+with its left edge and height unchanged. Dropdowns, waveform and slider tracks
+use the narrower bounds; the centered Release knob remains 47x47 px, preserving
+its image proportions. Text sizes are unchanged.
+
+Source lists every embedded `noise/*.wav` without its extension, followed by an
+`Imported audio` slot showing the loaded filename when available. Both dropdowns
+use bold black text, simple chevrons and no box/background; long source names
+truncate with an ellipsis. Trigger defaults to All samples and includes each
+numbered sample group. Volume fills its thick track from the left; modulation
+fills from centre toward the thumb, with PUMP/FOLLOW captions at opposite ends.
+Both sliders have black rounded vertical handles.
+
+`NoiseWaveformEditor` draws the full source from 1024 immutable min/max bins,
+combining stereo peaks without cancellation and scaling by the source peak for
+visibility. A black frame contains the waveform; excluded audio is shaded with
+20% black. Drag either endpoint handle to change the loop region. Clicking
+elsewhere in the waveform moves the nearest handle. Grabbing either handle
+smoothly stops noise once; playback stays stopped throughout the drag and
+restarts from the final selected start after release. Its gain setting is
+unchanged, so a muted source stays muted. Canceling a drag by hiding/closing the
+editor, switching source or replacing imported audio also releases the temporary
+stop. Handles stay ordered, with
+extra hit space around the full-file endpoints. Even a host-collapsed region's
+start remains reachable from its left side. Source changes terminate a drag;
+a 30 Hz message-thread timer follows source/trim automation without touching
+sample data. Bundled peak summaries are built during processor construction; imported peaks
+are built on the background loader and copied into the UI on publication.
+
+A single one-pixel `#CDD0C3` vertical playhead line follows active noise playback
+at the existing 30 Hz UI refresh rate. It is shown only on the currently playing
+source and within the displayed trim range. Stopping/muting noise, completing
+the trim-stop fade, bypass and release clear it. The line resumes when playback
+restarts. Pump/Follow modulation does not stop the underlying loop or its cursor.
+The line has no marker, label or separate interaction.
+
+Drop one supported audio file onto the waveform to replace the imported noise.
+Import runs in the background, selects the custom source and resets its trim to
+the full file. Imported display names remove square brackets and their contents
+(including multiple/nested groups), then trim/collapse whitespace. For example,
+`Street [120 BPM] [take 2].wav` displays as `Street`; an empty result displays as
+`Imported audio`. This cleaned name is saved and is also applied to older
+restored imports. The actual file on disk is not renamed.
+Gain remains unchanged, so a muted instance stays muted. WAV,
+AIFF, FLAC, Ogg/Vorbis and MP3 are supported, with additional codecs supplied by
+the platform. Imported audio is embedded in saved plugin state and survives
+moving/deleting the original file. Another drop replaces the custom entry;
+bundled choices remain available. Decode failures show an error dialog. The
+128 MiB limit applies to decoded mono/stereo float audio, not compressed file size.
+
+Volume defaults fully left to `−∞ dB` (off); its next step is -60 dB, then
+0.1 dB steps through +10 dB. Hover/drag shows gain in the popup; double-click
+returns to silence. Raising gain starts the selected region independently of
+MIDI and transport. Returning fully left fades out and stops playback.
+
+Pump/Follow defaults to zero/centre. Left ducks noise, reaching complete ducking
+on hits after the attack. Right lowers the untriggered background throughout
+its travel. Both sides use square-root depth for a stronger response near centre
+and a gentler approach to full effect: +/-35 on the -50..+50 scale corresponds
+to about 84% effective depth. Slider position/fill still represents the raw saved
+amount. The separate Follow trigger boost
+uses a square-root response, reaching its ceiling 30% of the way from centre to
+full right (+15 on a -50..+50 scale); full right reaches silence between hits
+after release. Double-click returns to neutral. Release uses the existing image
+knob and editable integer-ms readout, ranging 1..2000 ms with 150 ms default and
+double-click reset. Attack is fixed at 5 ms and Follow Rise at +12 dB, including
+for older projects; neither has a knob or value readout. Release returns noise
+in Pump and fades it out in Follow.
+
+The whole panel hides while Edit Samples is open, ending any active waveform
+gesture. Noise parameters remain global, saved/automatable and excluded from
+Apply to All. See [trim playback](playback-warp-and-transients.md#background-noise)
+for the 2 ms edit fades and region-boundary crossfade.
+
 ## Sample Effects Modal
 
 Sample-specific controls are hidden from the main editor until the centred
@@ -237,11 +321,11 @@ one stable `(noteIndex, pitchIndex)` group from the loader's keyboard map.
 Audio writes note velocities/generation counters to `MidiNoteActivityState`.
 The editor builds `midiNote -> sampleGroupIndex` once from loaded groups, polls
 128 fixed note generations, and updates only buttons whose related note changed.
-Each note-on also publishes the latest played MIDI note through a scalar atomic
-generation handoff. After an idle period, the editor selects the first mapped
-note immediately. Further mapped notes keep only the latest selection pending;
-500 ms after the final note-on, the editor selects that last sample. This avoids
-rapid control changes while playing a phrase without delaying an isolated hit.
-A quick note-on/note-off between timer ticks is still recognized. Manually
-clicking a selector item cancels the pending MIDI selection, and notes with no
-loaded sample group do not change or extend the selection burst.
+Each mapped note-on remembers the last played sample's MIDI note in a scalar
+atomic, including while the editor is closed. Unmapped notes and note-offs do
+not replace it. MIDI activity never changes the editing selection.
+Clicking `EDIT SAMPLES` reads that note directly and selects its sample before
+opening the modal, without polling delay or selection throttling/debounce.
+Until a mapped sample has played, opening the modal keeps the current selection.
+Manual selection remains immediate and stays selected during subsequent MIDI
+playback; reopening the modal selects the latest played sample again.

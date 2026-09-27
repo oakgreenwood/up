@@ -18,6 +18,17 @@ The selector uses the same map: one group per `(noteIndex, pitchIndex)`, ignorin
 velocity/variation. `1_v1_n2` and `1_v1_n3` share an item; `4_v1_n1_p1` and
 `4_v1_n1_p2` have separate items.
 
+`getEmbeddedSampleGroups()` shares the loader's resource-name collection and
+pitch-slot mapping to inventory numbered noise-trigger choices before APVTS is
+constructed. It does not decode audio. Noise trigger selection uses the group's
+mapped MIDI root note and therefore includes all of its velocity layers,
+variations and playing voices. The inventory stays immutable during rendering.
+Each loaded sound also owns an immutable noise-trigger table: one start hit for
+one-shots, JSON markers for loops/warp sources, and prepared source peak values.
+The noise's 80/20 strength rule combines these peaks with the existing velocity,
+sample Gain and ADSR multipliers; it does not change percussion velocity gain.
+See [noise modulation](playback-warp-and-transients.md#noise-pump--follow).
+
 ## Velocity Inventory And Selection
 
 Current `samples/*.wav` inventory:

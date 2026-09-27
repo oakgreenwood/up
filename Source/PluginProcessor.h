@@ -9,6 +9,8 @@
 #include "Effects/RzhavProcessor.h"
 #include "Effects/OttProcessor.h"
 #include "Effects/SampleSpectrum.h"
+#include "Effects/NoiseSidechain.h"
+#include "Playback/BackgroundNoisePlayer.h"
 #include "Midi/MidiNoteActivityState.h"
 #include "PercussionSynthesiser.h"
 #include "Parameters/SampleSpecificParameterState.h"
@@ -73,9 +75,17 @@ public:
     float getMidiNoteActivityVelocity(int midiNote) const noexcept;
     uint32_t getMidiNoteActivityGeneration(int midiNote) const noexcept;
     int getLatestMidiNoteOnNote() const noexcept;
-    uint32_t getLatestMidiNoteOnGeneration() const noexcept;
 
     SampleSpectrum& getSampleSpectrum() noexcept { return sampleSpectrum; }
+    bool copyNoiseWaveform(int sourceIndex, BackgroundNoisePlayer::Waveform& waveform) const
+    { return backgroundNoise.copyWaveform(sourceIndex, waveform); }
+    float getNoisePlayheadPosition(int sourceIndex) const noexcept
+    { return backgroundNoise.getPlayheadPosition(sourceIndex); }
+    void importNoiseFile(const juce::File&);
+    juce::String getImportedNoiseName() const { return backgroundNoise.getImportedName(); }
+    juce::String takeNoiseImportError() { return backgroundNoise.takeImportError(); }
+    uint32_t getNoiseImportRevision() const noexcept { return backgroundNoise.getImportedRevision(); }
+    void setNoiseTrimActive(bool active) noexcept { backgroundNoise.setTrimActive(active); }
 
     float getSampleSpecificParameterValue(const juce::String& parameterId, float fallbackValue) const;
     void setSampleSpecificParameterValue(const juce::String& parameterId, float value);
@@ -97,6 +107,18 @@ private:
     RzhavProcessor rzhavProcessor;
     OttProcessor ottProcessor;
     std::atomic<float>* ottAmountParam = nullptr;
+    BackgroundNoisePlayer backgroundNoise;
+    std::atomic<float>* noiseSourceParam = nullptr;
+    std::atomic<float>* noiseGainParam = nullptr;
+    std::atomic<float>* noiseModulationParam = nullptr;
+    std::atomic<float>* noiseTriggerParam = nullptr;
+    std::atomic<float>* noiseReleaseParam = nullptr;
+    std::atomic<float>* noiseStartParam = nullptr;
+    std::atomic<float>* noiseEndParam = nullptr;
+    const std::vector<PercussionSampleLibrary::SampleGroupInfo> noiseTriggerGroups {
+        PercussionSampleLibrary::getEmbeddedSampleGroups()
+    };
+    NoiseSidechain noiseSidechain;
     SampleSpectrum sampleSpectrum;
     PercussionSynthesiser sampler;
     MidiNoteActivityState midiNoteActivity;

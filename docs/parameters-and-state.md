@@ -61,6 +61,120 @@ transaction visible atomically to audio. Existing scalar effects still copy only
 their own value. UI gesture tracking observes all eight host parameters, while
 mapping them to the one EQ menu entry. There are no extra editing controls.
 
+## Background Noise Parameters
+
+`noiseSource` (choice, default first source) and `noiseGainDb` (float, default
+silence) are appended after EQ, preserving existing host indices. The gain uses
+the finite sentinel -60.1 for the far-left `−∞` position; audible values run
+from -60 to +10 dB in 0.1 dB steps. This avoids serializing IEEE infinity.
+Both are global APVTS values and use constructor-cached scalar atomics on audio.
+No sample-specific registry entry, listener or per-note cache is involved.
+
+Normal APVTS copy/replace saves/restores both parameters, including automation
+without the editor. Older states insert the silent gain and first-source defaults
+before replacement, even in an already-used instance. State also saves the source
+name as `noiseSourceName` and remaps the saved choice when a later build changes
+the sorted inventory. A removed source restores silent with the first source
+selected. Automation choice indices remain tied to the build's inventory.
+Opening/reopening the editor does not reset restored gain. Playback position is
+not serialized. Embedded buffers stay immutable during restore; audio follows the restored
+scalar targets using its normal fades. Imported buffers use the pinned-slot
+publication described below.
+
+Four additional global parameters follow the original noise controls:
+
+| ID | Range | Default |
+| --- | --- | --- |
+| `noiseModulation` | -1 (Pump)..0 (neutral)..+1 (Follow), 0.01 steps | 0 |
+| `noiseTrigger` | All samples, then numbered sample groups | All samples |
+| `noiseAttackMs` (inert legacy) | 1..2000 ms, 1 ms steps | 5 ms |
+| `noiseReleaseMs` | 1..2000 ms, 1 ms steps | 150 ms |
+
+Time parameters use a skewed range with 100 ms at the midpoint. Active controls
+use standard APVTS attachments, cached audio scalar pointers and copy/replace state;
+none participates in sample selection or Apply to All. Older state receives
+these defaults before replacement, including when loaded into an already-used
+instance. The trigger also saves `noiseTriggerNoteIndex`/`noiseTriggerPitchIndex`
+to restore the same group across reordered inventories. If that group disappears,
+restore selects All samples and returns modulation to neutral. Existing automation
+choice indices remain specific to the build's inventory, as with noise sources.
+Detector envelopes and noise playheads are not serialized. Trigger changes retain
+the current envelopes and filter subsequent hit events. The 80/20 strength rule
+and JSON-triggered pulses are unchanged by the simplified controls. Per-voice transient cursors and delayed
+hits are runtime-only and reset with playback. Pump's separate sharper attack
+and quadratic gain recovery use the fixed Attack and adjustable Release; their phase
+and envelope values are also runtime-only. Follow retains its exponential curve.
+
+`noiseAttackMs` and `noiseRiseDb` are now inert legacy host slots. Keeping their
+IDs/order preserves subsequent parameter indices and old state parsing. Their
+new defaults are 5 ms and +12 dB, but the render path always supplies these fixed
+constants, ignoring legacy saved values and automation. No editor controls or
+audio cached pointers remain for these two parameters. Release remains adjustable
+and automatable, with the same 1..2000 ms range and 150 ms default.
+
+Follow boost retains the square-root curve reaching maximum at depth 0.3;
+background attenuation and Pump depth now use `sqrt(abs(amount))` over the
+full travel. Both remain neutral at zero and reach maximum at the endpoints;
+raw depth 0.7 (+/-35 on a -50..+50 scale) gives about 83.7% effective depth.
+The existing modulation parameter
+range/ID is unchanged. The +15/+50 positions refer to this same 30% fraction of
+the positive half, not new parameter units.
+
+Saved noise gain values restore directly, without a range-version marker or
+old-silence migration. A saved -40.1 dB now represents audible gain in the new
+range. Missing gain still defaults to the current -60.1 silence sentinel.
+Host-owned normalized automation may map differently with the expanded range.
+
+`noiseStart` and `noiseEnd` are appended after the envelope controls. They are
+continuous normalized global parameters in 0..1, defaulting to 0/1 (the entire
+source), saved/restored through APVTS. Older states receive those full-range
+defaults even when loaded into an already-trimmed instance. The same relative
+range applies when switching noise files; trims are not stored per source.
+
+Audio and waveform display share `BackgroundNoisePlayer::resolveRegion`: start
+rounds down to a frame and end rounds up to an exclusive boundary. Non-finite
+values fall back to 0/1, and crossing/equal host values safely resolve to at least
+one frame, with start authoritative. UI dragging keeps the handles ordered with
+a minimum gap of one frame or 1e-6 of the source, whichever is larger. Each drag
+brackets a standard host gesture, ending on release, source switch, hiding or
+editor destruction. A separate runtime-only scalar gesture counter pauses noise
+during dragging and restarts it afterward; it is not an APVTS parameter, is not
+saved, and never changes the gain parameter. Audio snapshots gesture state before
+reading the constructor-cached start/end atomics.
+
+### Imported noise audio
+
+The source choice appends a permanent `Imported audio` slot after the bundled
+files; existing parameter indices and embedded source indices are unchanged.
+Its dropdown label shows the latest successfully imported filename with square
+brackets and all bracketed text removed. Whitespace is trimmed/collapsed and an
+empty result becomes `Imported audio`. Cleanup applies on import and restore,
+and the cleaned label is saved; the source file on disk is unchanged. Host-facing
+choice text remains `Imported audio`. A new drop replaces this one custom slot,
+selects it, and resets start/end to 0/1 with host parameter gestures; gain and
+Pump/Follow settings stay unchanged. A non-parameter state-change notification
+also marks replacements dirty when the imported choice was already selected.
+
+`noiseUsesImportedSource` preserves custom selection independently of the
+embedded inventory. An `ImportedNoise` child stores the filename and standard
+Base64-encoded 32-bit float PCM WAV, including while a bundled source is selected.
+The WAV contains sanitized decoded audio at its original rate, with at most the
+first two channels. There is no dependency on the original path after loading,
+and no audio quantization during the portable WAV round trip. The payload makes
+saved project/preset state larger. Gain, trim and modulation retain their ordinary
+APVTS serialization.
+
+Save waits for a pending import to finish on the non-realtime state thread, so
+saving immediately after dropping a file includes it. The loader never calls
+host/UI callbacks or waits for the message thread. Restore queues decoding on
+the loader and cancels earlier work, then removes the large payload from the
+live APVTS tree before `replaceState`. Noise is silent until the restored custom
+source is ready (with a fade-out of an old active source). Missing custom state
+clears the published imported source, including when restoring into a used
+instance. Corrupt/oversized payloads do not publish audio. Reopening the editor
+retains the processor's import; reopening a project/preset restores its embedded
+copy. A fresh unrelated instance starts without imported audio.
+
 ## Program Metadata
 
 The processor reports one program at index `0`, named `Default`. The nonempty
@@ -71,10 +185,11 @@ and renaming are no-ops; selecting this program does not reset parameter values.
 
 `AudioPluginAudioProcessor` stores the selected group index and serializes both
 that index and its stable `(noteIndex, pitchIndex)` key. Restore by key, with
-index fallback for older state. Clicking a selector item or playing its mapped
-MIDI note changes the same selected group, so the host-facing sample parameters
-and editor controls follow the first isolated hit immediately and the last note
-of a rapid phrase after the editor's 500 ms selection debounce.
+index fallback for older state. Clicking a selector item changes the selected group immediately. MIDI notes
+only remember the last played mapped sample; clicking `EDIT SAMPLES` selects
+that sample and synchronizes the host-facing parameters and editor controls.
+There is no MIDI selection debounce, and playback does not change the editing
+selection. The remembered note is runtime-only and is not serialized.
 
 `SampleSpecificParameterState` stores per-sample values in a `sampleSpecific`
 ValueTree child, keyed by `(noteIndex, pitchIndex)` with legacy index fallback.

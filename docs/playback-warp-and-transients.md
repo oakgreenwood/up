@@ -10,8 +10,18 @@ parameter storage or realtime-cache publication.
 Order: clear output; update BPM/transport via `HostTempoTracker`; publish the
 transport state to `WarpCachePrewarmer`; render the sampler (including each
 voice's PSOLA Formant followed by its LPC EQ/saturation, Mono, Panorama and sample EQ);
-process global Rzhavchina, then OTT.
+process global Rzhavchina, then OTT, then mix independent background noise.
 The prewarmer's persistent worker performs all cache rendering and reclamation.
+
+Rendering now uses fixed chunks of at most 512 frames to capture a noise trigger
+without block-size-dependent allocation. Each chunk renders percussion and
+captures latency-aligned voice hits, computes noise modulation, processes Rzhavchina
+and OTT, then adds noise. The spectrum still receives original host offsets.
+MIDI is traversed once: events are dispatched between render ranges through
+the synth, preserving JUCE's default 32-frame coalescing and exact first rendered
+interval independently of chunk boundaries. Future events are not passed to
+JUCE repeatedly; end/zero-block events are dispatched once. Unsupported messages
+longer than three bytes are filtered before constructing owning MIDI messages.
 
 `RzhavProcessor` implements `Rzhavchina`: true bypass at `0`; above zero, bit depth
 falls from `12` to `8` bits and target sample rate from `21 kHz` to `9 kHz`, clamped
@@ -19,8 +29,233 @@ to host sample rate.
 
 No file I/O, logging, UI calls, allocations, or avoidable locks. Never access
 `SampleGroupSelector` or `SampleSpecificParameterState` here; use prepared
-realtime caches. Feed UI activity and the latest note-on selection through fixed
-atomics (`MidiNoteActivityState`) polled by the editor on the message thread.
+realtime caches. Feed UI activity and the last played mapped note through fixed atomics
+(`MidiNoteActivityState`). The editor polls activity on the message thread and
+reads the remembered note only when `EDIT SAMPLES` is clicked.
+
+## Background Noise
+
+`BackgroundNoisePlayer` decodes the embedded noise WAVs once during processor
+construction. Original sample rates are retained; linear interpolation follows
+the host rate, with mono duplication or stereo-to-mono averaging as needed.
+Invalid/empty sources stay silent. Decoding sanitizes non-finite samples to zero
+and clamps samples to [-1, 1]. The immutable buffers remain owned by the processor
+until stopped teardown; choosing a source never loads or frees audio on render.
+
+Noise is mixed after Rzhavchina/OTT and ignores MIDI, tempo and transport. A new
+instance is silent. Raising gain from the far-left sentinel starts at the selected region's start
+with a 10 ms linear-amplitude ramp. Returning to silence ramps down over 10 ms,
+then resets playback and skips all source reading. Source changes fade out the
+old source before starting the new one; changes while silent do not start it.
+The loop overlaps up to the final/initial 10 ms of the region (at most half its length), then
+continues after the consumed head overlap. This smooths endpoint discontinuities
+and shortens the repeated period by the overlap duration.
+
+The selected region defaults to the whole file and is driven by normalized
+`noiseStart`/`noiseEnd` values. Resolution clamps it to a nonempty frame range;
+interpolation never reads beyond the selected end. During a waveform handle
+gesture, noise completes one 10 ms gain fade-out and resets playback. It stays
+stopped while the handle is held, without repeatedly adopting intermediate
+regions. On release it restarts at the final selected start using the existing
+gain/start fades. A quick release still completes the stop before restarting;
+a completed gesture between callbacks is detected too. Gain at the silence
+sentinel continues to prevent playback.
+
+The UI publishes a scalar gesture counter (odd while dragging, even otherwise).
+Audio acquires it once per host block before reading start/end targets and
+passes that snapshot to every render chunk. Only audio owns the pending-stop
+flag, observed counter and playhead. UI cleanup ends the temporary stop on
+release, source/replacement changes, hiding or destruction. This runtime gesture
+state is not saved and does not write the gain parameter.
+
+Start/end automation outside a UI gesture retains the existing 2 ms region
+fade-out, adoption of the newest range and restart with a 2 ms fade-in.
+These scalar fades are separate from the base-gain
+10 ms ramp and sidechain envelopes. No buffers are copied/replaced. Edits while
+base gain is off update only parameter targets; the next start uses those bounds.
+Repeated rapid edits adopt the most recent range after the short fade completes.
+Modulo wrapping remains bounded for one-frame regions and rate conversion that
+skips multiple loop periods; a floating-point endpoint guard prevents a rounded
+position from reaching the exclusive end.
+
+Construction also prepares 1024 min/max waveform bins from the sanitized mono/
+stereo source. These small summaries, their peak magnitude and source length
+are immutable with their source. The editor copies only these summaries,
+not the audio buffers; drawing and handle interaction never decode or scan WAVs.
+
+At the end of each noise render chunk, audio publishes one lock-free uint64
+playhead snapshot containing source/slot identity and normalized full-source
+position. Zero represents stopped playback; reset, mute completion, bypass,
+release and zero-channel rendering clear it. No per-sample atomic write is used.
+The UI reads only this scalar, rejects a different source/import slot and draws
+the line from its existing timer. Imported-slot identity prevents displaying the
+outgoing source's position on a replacement's waveform during its fade. The
+snapshot is runtime-only and never serialized. Sidechain ducking/following leaves
+the running playhead intact, including at zero modulation gain.
+
+Preparation/sample-rate changes reset playback and configure the ramp; release
+and bypass reset it without freeing buffers. The next active callback follows
+the current saved gain. Zero blocks do not advance playback; one-frame and larger
+blocks use bounded per-frame work with no scratch allocation. Non-finite targets
+are made silent or select the first source; sample rates and indices are bounded.
+Tail reporting is infinite while noise gain is enabled, finite otherwise.
+
+See [noise state](parameters-and-state.md#background-noise-parameters),
+[UI](ui.md#background-noise), and the current
+[import audit](realtime-audio-audit-noise-import.md).
+
+### Imported noise loading
+
+`BackgroundNoisePlayer` has one persistent JUCE loader thread. Dropping a file
+queues a latest-request-wins job; state restoration uses the same worker with
+embedded WAV data. JUCE basic formats decode WAV, AIFF, FLAC, Ogg/Vorbis and MP3,
+plus available platform codecs. Decoding reads at most 16384 frames per step and
+checks cancellation between steps. Empty/invalid files, rates outside 1..768 kHz,
+and imports exceeding 128 MiB of decoded mono/stereo float audio are rejected.
+Files with more channels use the first two. Peak building, sanitization, portable
+float-WAV encoding, Base64 work and allocations stay on the loader.
+
+Three fixed imported-source slots provide nonblocking publication. Audio makes
+at most two attempts to pin a published slot, and keeps its active slot pinned
+across callbacks and throughout a source-switch fade. A per-call temporary pin
+protects the new candidate. Adoption retains its pin and releases the old one;
+reset/bypass/mute release only scalar pins. The worker reserves an unpublished,
+unpinned slot with CAS before replacing its owning pointer, then publishes the
+fully prepared source. Audio never destroys a source. Consecutive imports and
+restores invalidate older jobs by generation. Only the worker can wait for a
+free slot; rendering never waits or takes the import mutex.
+
+UI waveform/name reads and state serialization share a non-audio mutex with
+publication. The UI owns a summary copy and never retains a replaceable source
+pointer. A revision counter refreshes same-slot replacements, even with identical
+filenames, and ends any trim drag on the replaced source. Teardown cancels and
+joins the worker before destroying slots, with host rendering already stopped.
+The three slots bound retained source history; retired audio is destroyed on
+worker reuse or stopped teardown. Imported playback uses the same gain ramps,
+region fades, loop crossfade and sidechain as bundled noise.
+
+Failed drops keep the previously published imported audio, if any, and report an
+error on the message thread. Since a drop selects the imported slot immediately,
+a first failed import leaves that slot silent; its gain setting is preserved.
+
+### Noise Pump / Follow
+
+`NoiseSidechain` receives hit events from the selected sample group (or All
+samples). One-shots trigger once at source start. Loop/warp sounds use their
+transient JSON onsets on every playback pass, independently of Punch and
+`ignoreTransientShaper`. A quiet continuous loop bed cannot keep the envelope
+open: only the markers retrigger it. Missing/empty valid markers fall back to
+one trigger at source start, repeated if the source loops; no onset detection
+is performed on the audio thread.
+
+`PercussionSound` prepares an immutable noise-trigger table during loading.
+Finite markers within the measured audio duration are sorted and deduplicated.
+Each marker stores a stereo peak measured over the next 50 ms or up to the next
+marker, whichever comes first. One-shots use their whole-source peak. At the hit,
+this peak is multiplied by the current sample Gain, velocity gain and voice ADSR.
+Levels at/below -80 dB produce no trigger. Audible hits have strength:
+
+```
+strength = 0.8 + 0.2 * min(1, 4 * peak * voiceGain)
+```
+
+Thus quiet hits open almost as far as loud hits, retaining up to 20% amplitude
+dynamics. The existing -12 dB reference for full dynamic strength is unchanged.
+Strength estimates use original source audio and gain, not post-EQ/Formant peaks;
+Punch, sustain and global effects do not alter the 20% estimate. Simultaneous
+voices use the strongest hit, without summing their strengths.
+
+`NoiseTriggerTracker` advances at each actual rendered frame. Original playback
+uses source position/rate; cached warp additionally divides by its time ratio;
+realtime warp uses its output source-time cursor, not the input feed cursor.
+Explicit loop wraps reset the marker cursor. Playback-path switches preserve
+it, preventing repeat hits from small rounding rewinds. Multiple markers crossed
+within one output frame coalesce to the latest; a binary search avoids scanning
+all skipped markers. Per-voice event rings delay triggers by the existing PSOLA
+plus coloration latency, including through the effect drain. They allocate only
+in preparation and reset via scalar indices on note reuse. No extra audio
+latency is introduced. Realtime warp follows the existing output timeline;
+Rubber Band's transient displacement can still differ from the offline cache.
+
+A hit starts a fixed 5 ms attack stage, followed by
+release. New hits restart attack from the current values without a zero reset;
+a quieter overlapping hit cannot pull an existing attack down. Long releases
+can merge successive pulses. Release remains 1..2000 ms, default 150 ms.
+
+Follow retains its exponential strength envelope `L`: its one-pole coefficients
+cover 99.9% of a step within the configured time, snapping within 1e-5 of the target.
+Full Follow opens during attack and fades to exact silence on release. The
+maximum triggered gain above the base noise volume is fixed at +12 dB. Follow
+amount has separate background and boost behavior:
+background gain decreases using square-root depth across the Follow half, while the
+triggered boost reaches its ceiling on a square-root curve by 30% of that half
+(+15 on a conceptual -50..+50 scale). Above that point, the maximum triggered
+level stays fixed while the untriggered background continues falling.
+
+The 80/20 hit-strength envelope remains unchanged, so quieter hits can still
+land below the ceiling. For a strength less than unity, some background remains
+in the interpolation and the actual peak can decrease slightly as depth rises;
+the boost ceiling itself does not change. The render path supplies fixed Attack
+and Rise defaults, so legacy saved values or automation cannot override them.
+The existing cached conversion/smoothing initializes Rise directly at +12 dB.
+The square root is recomputed only while the existing smoothed Follow depth changes.
+
+Pump now has separate strength and unit ducking envelopes `Lp` and `Ap` that
+continue tracking even when Follow is selected. Attack uses the square of the
+existing exponential coefficient, making the remaining distance to the ducked
+target decay twice as fast (99.9% reached in 2.5 ms). The attack
+stage still lasts 5 ms; values snap within 1e-5 of their targets,
+allowing exact silence at full Pump before release. Retriggers preserve current
+values and can only maintain or deepen the ducking target.
+
+Pump release returns noise gain using quadratic ease-in over the Release time.
+For normalized release progress `t` from 0 to 1:
+
+```
+Lp = releaseStartLp * (1 - t*t)
+Ap = releaseStartAp * (1 - t*t)
+```
+
+Thus 25%, 50% and 75% through release restore 6.25%, 25% and 56.25% of the ducked
+volume respectively; at the endpoint noise returns fully. Release-time edits
+change the phase increment without resetting phase or envelope value. Pump
+release begins from the actual final attack values.
+
+Both Pump ducking depth and Follow background attenuation use `d = sqrt(abs(a))`
+where `a` is the existing smoothed bipolar amount. This increases sensitivity
+near centre and eases toward full depth: conceptual slider positions +/-10,
++/-25 and +/-35 on a -50..+50 scale give about 44.7%, 70.7% and 83.7% effective
+depth. Full depth remains at +/-50; there is no plateau at +/-35. Each square
+root is cached until the input changes. Envelope timing/curves are unchanged.
+
+With raw depth `r = abs(a)`, curved depth `d = sqrt(r)` and fixed Rise gain
+`B = 10^(12/20)`, the mapping is:
+
+```
+a < 0: 1 - d * ((1 - d) * Lp + d * Ap)
+a >= 0:
+    base = 1 - d
+    boostShape = sqrt(min(1, r / 0.3))
+    triggeredPeak = 1 + (B - 1) * boostShape
+    multiplier = base + (triggeredPeak - base) * L
+```
+
+At an envelope of unity, all raw depths from 0.3 to 1 reach the same `B` maximum.
+The boost curve keeps using raw depth, so its +15 saturation point is unchanged.
+At zero envelope, only `base` remains. The gain ceiling is bounded to approximately
+3.9811 (+12 dB); the noise renderer consumes it without a unity clamp.
+Centre is exact unity. Full Pump uses `Ap` for level-independent ducking; full
+Follow has no unmodulated floor. Amount changes still ramp over 10 ms. Trigger
+selection changes preserve envelope continuity and filter future arriving hits.
+After preparation/bypass, the first amount is seeded directly from the parameter,
+so restored full Follow starts silent. Detection continues while base noise gain
+is off. Modulation never resets the noise loop/playhead.
+
+Capture and modulation reuse a fixed 512-float array; voices use fixed 128-frame
+hit scratch plus the prepared latency ring. Parameters are snapshotted once per
+host block; coefficient exponentials run only when times/rate change. No new
+DSP-owned buffers are introduced. See the current
+[depth curve audit](realtime-audio-audit-noise-depth-curve.md).
 
 ## Global OTT
 

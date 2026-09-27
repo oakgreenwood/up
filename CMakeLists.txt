@@ -104,8 +104,11 @@ set(SourceFiles
         Source/Effects/SampleEqualiser.h
         Source/Effects/SampleEqualiser.cpp
         Source/Effects/SampleSpectrum.h
+        Source/Effects/NoiseSidechain.h
         Source/UI/SampleEqualiserEditor.h
         Source/UI/SampleEqualiserEditor.cpp
+        Source/UI/NoiseWaveformEditor.h
+        Source/UI/NoiseWaveformEditor.cpp
         Source/SampleLibrary/SampleNameParser.h
         Source/SampleLibrary/SampleNameParser.cpp
         Source/SampleLibrary/PercussionSampleLibrary.h
@@ -116,6 +119,8 @@ set(SourceFiles
         Source/Warp/WarpCachePrewarmer.cpp
         Source/Playback/NoteStartDeclicker.h
         Source/Playback/NoteStartDeclicker.cpp
+        Source/Playback/BackgroundNoisePlayer.h
+        Source/Playback/BackgroundNoisePlayer.cpp
         Source/Playback/PunchEnvelope.h
         Source/Playback/PunchEnvelope.cpp
         Source/Playback/RealtimeWarpPlayer.h
@@ -186,6 +191,7 @@ target_compile_definitions(${PROJECT_NAME}
         NOMINMAX=1
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
+        JUCE_USE_MP3AUDIOFORMAT=1
         JUCE_VST3_CAN_REPLACE_VST2=0
         $<$<PLATFORM_ID:Windows>:NOMINMAX=1>
         $<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN=1>
@@ -193,6 +199,14 @@ target_compile_definitions(${PROJECT_NAME}
 
 file(GLOB SAMPLE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/samples/*.wav")
 file(GLOB TRANSIENT_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/transients/*.json")
+file(GLOB NOISE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/noise/*.wav")
+
+# Keep the noise inventory separate from percussion samples and UI resources.
+juce_add_binary_data(${PROJECT_NAME}NoiseData
+    NAMESPACE NoiseBinaryData
+    HEADER_NAME NoiseBinaryData.h
+    SOURCES ${NOISE_FILES}
+)
 
 # Pass them to BinaryData
 juce_add_binary_data(${PROJECT_NAME}Data
@@ -232,4 +246,5 @@ target_link_libraries(${PROJECT_NAME}
         ${JUCE_LTO_TARGET}
         juce::juce_recommended_warning_flags
         ${PROJECT_NAME}Data
+        ${PROJECT_NAME}NoiseData
 )

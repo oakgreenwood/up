@@ -10,6 +10,11 @@
 class PercussionSynthesiser : public juce::Synthesiser
 {
 public:
+    // Audio-thread range rendering lets the processor bound its sidechain
+    // storage without copying MIDI or replaying future events at chunk edges.
+    void renderAudioRange(juce::AudioBuffer<float>& output, int start, int count);
+    void dispatchMidi(const juce::MidiMessage& message);
+
     void clearLayerMappings();
 
     void registerLayeredSound(PercussionSound* sound,

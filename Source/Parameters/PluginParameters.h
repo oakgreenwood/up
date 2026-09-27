@@ -14,6 +14,24 @@ namespace PluginParameters
     inline constexpr const char* warpEnabledId = "warpEnabled";
     inline constexpr const char* ottAmountId = "ottAmount";
     inline constexpr float ottAmountDefault = 0.0f;
+    inline constexpr const char* noiseSourceId = "noiseSource";
+    inline constexpr const char* noiseGainDbId = "noiseGainDb";
+    // One finite sentinel step below the audible range represents -infinity.
+    inline constexpr float noiseGainDbSilence = -60.1f;
+    inline constexpr float noiseGainDbMinimum = -60.0f;
+    inline constexpr float noiseGainDbMaximum = 10.0f;
+    inline constexpr const char* noiseModulationId = "noiseModulation";
+    inline constexpr const char* noiseTriggerId = "noiseTrigger";
+    // Retained legacy host slots; DSP uses fixed Attack/Rise defaults.
+    inline constexpr const char* noiseAttackMsId = "noiseAttackMs";
+    inline constexpr const char* noiseReleaseMsId = "noiseReleaseMs";
+    inline constexpr const char* noiseStartId = "noiseStart";
+    inline constexpr const char* noiseEndId = "noiseEnd";
+    inline constexpr const char* noiseRiseDbId = "noiseRiseDb";
+    inline constexpr float noiseRiseDbMaximum = 12.0f;
+    inline constexpr float noiseRiseDbDefault = 12.0f;
+    inline constexpr float noiseAttackMsDefault = 5.0f;
+    inline constexpr float noiseReleaseMsDefault = 150.0f;
     inline constexpr const char* sampleGainDbId = "sampleGainDb";
     inline constexpr float sampleGainDbMinimum = -20.0f;
     inline constexpr float sampleGainDbMaximum = 20.0f;
@@ -80,5 +98,6 @@ namespace PluginParameters
     const SampleSpecificParameter* findSampleSpecificParameter(const juce::String& parameterId) noexcept;
     bool isSampleSpecificParameterId(const juce::String& parameterId) noexcept;
 
+    juce::StringArray getNoiseTriggerNames();
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 }

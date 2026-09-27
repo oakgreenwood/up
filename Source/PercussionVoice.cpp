@@ -72,6 +72,8 @@ void PercussionVoice::prepareRealtimeWarpResources(double playbackSampleRate, in
     formantShifter.prepare(playbackSampleRate);
     formantColouration.prepare(playbackSampleRate);
     equaliser.prepare(playbackSampleRate);
+    noiseTriggerDelay.prepare(FormantShifter::latencySamples
+        + PsolaFormantShifter::latencyForSampleRate(playbackSampleRate));
     formantDrainSamples = FormantShifter::tailSamples
                           + PsolaFormantShifter::tailForSampleRate(playbackSampleRate);
     realtimeWarpPlayer.prepare(playbackSampleRate, 2, samplesPerBlock);
@@ -106,6 +108,7 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
         const int count = juce::jmin(FormantShifter::hopSize, numSamples - rendered,
                                     draining ? formantTailRemaining : FormantShifter::hopSize);
         voiceScratch.clear();
+        noiseHits.fill(0.0f);
         if (!draining)
             renderSourceBlock(voiceScratch, 0, count);
 
@@ -127,6 +130,9 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
             }
             applySamplePan(left[i], right[i], stereoOutput);
             equaliser.process(left[i], right[i]);
+            const float noiseHit = noiseTriggerDelay.process(noiseHits[static_cast<size_t>(i)]);
+            if (noiseSidechain != nullptr && noiseHit > 0.0f)
+                noiseSidechain->addHit(spectrumNote, startSample + rendered + i, noiseHit);
             if (sampleSpectrum != nullptr)
                 sampleSpectrum->add(spectrumNote, startSample + rendered + i,
                                     left[i], stereoOutput ? right[i] : left[i]);
@@ -209,7 +215,8 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
                                                       sustainMakeupGain,
                                                       effectiveSamplePitchRatio,
                                                       sustainShaper,
-                                                      noteStartDeclicker);
+                                                      noteStartDeclicker,
+                                                      noiseTrigger, noiseHits.data());
 
         if (result.finished)
             finishSourcePlayback();
@@ -234,7 +241,8 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
                                              sustainAmount,
                                              sustainMakeupGain,
                                              sustainShaper,
-                                             noteStartDeclicker);
+                                             noteStartDeclicker,
+                                             noiseTrigger, noiseHits.data());
 
     if (result.finished)
         finishSourcePlayback();
@@ -281,6 +289,8 @@ void PercussionVoice::beginPlayback(float velocity)
     }
 
     metadata = currentSound->metadata.get();
+    noiseTrigger.start(&currentSound->getNoiseTriggerPoints());
+    noiseTriggerDelay.reset();
     sustainShaper.setMetadata(metadata);
     if (warpCachePrewarmer != nullptr && currentSound->isWarpEnabled())
         warpCachePrewarmer->recordPlayed(*currentSound);
@@ -388,6 +398,8 @@ void PercussionVoice::clearActivePlayback()
     clearCurrentNote();
 
     currentSound = nullptr;
+    noiseTrigger.start(nullptr);
+    noiseTriggerDelay.reset();
     activeWarpCache.reset();
     activeBuffer = nullptr;
     metadata = nullptr;

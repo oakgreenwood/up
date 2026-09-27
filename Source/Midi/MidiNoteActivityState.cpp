@@ -1,5 +1,7 @@
 #include "MidiNoteActivityState.h"
 
+#include <limits>
+
 static_assert(std::atomic<float>::is_always_lock_free);
 static_assert(std::atomic<int>::is_always_lock_free);
 static_assert(std::atomic<uint32_t>::is_always_lock_free);
@@ -10,6 +12,12 @@ MidiNoteActivityState::MidiNoteActivityState()
         generation.store(0, std::memory_order_relaxed);
 
     reset();
+}
+
+void MidiNoteActivityState::enableSampleNote(int midiNote) noexcept
+{
+    if (midiNote >= 0 && midiNote < midiNoteCount)
+        sampleNotes[(size_t) midiNote] = true;
 }
 
 void MidiNoteActivityState::reset() noexcept
@@ -38,11 +46,13 @@ void MidiNoteActivityState::handleMidiMessage(const juce::MidiMessage& message) 
         if (midiNote < 0 || midiNote >= midiNoteCount)
             return;
 
-        ++activeNoteCounts[(size_t) midiNote];
+        auto& activeNoteCount = activeNoteCounts[(size_t) midiNote];
+        if (activeNoteCount < std::numeric_limits<int>::max())
+            ++activeNoteCount;
         velocities[(size_t) midiNote].store(message.getFloatVelocity(), std::memory_order_relaxed);
         generations[(size_t) midiNote].fetch_add(1, std::memory_order_relaxed);
-        latestNoteOnMidiNote.store(midiNote, std::memory_order_relaxed);
-        latestNoteOnGeneration.fetch_add(1, std::memory_order_release);
+        if (sampleNotes[(size_t) midiNote])
+            latestNoteOnMidiNote.store(midiNote, std::memory_order_relaxed);
         return;
     }
 
@@ -84,9 +94,4 @@ uint32_t MidiNoteActivityState::getGenerationForMidiNote(int midiNote) const noe
 int MidiNoteActivityState::getLatestNoteOnMidiNote() const noexcept
 {
     return latestNoteOnMidiNote.load(std::memory_order_relaxed);
-}
-
-uint32_t MidiNoteActivityState::getLatestNoteOnGeneration() const noexcept
-{
-    return latestNoteOnGeneration.load(std::memory_order_acquire);
 }

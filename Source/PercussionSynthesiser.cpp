@@ -3,6 +3,20 @@
 #include <algorithm>
 #include <cmath>
 
+void PercussionSynthesiser::renderAudioRange(juce::AudioBuffer<float>& output, int start, int count)
+{
+    if (count <= 0 || output.getNumChannels() == 0)
+        return;
+    const juce::ScopedLock guard(lock);
+    renderVoices(output, start, count);
+}
+
+void PercussionSynthesiser::dispatchMidi(const juce::MidiMessage& message)
+{
+    const juce::ScopedLock guard(lock);
+    handleMidiEvent(message);
+}
+
 void PercussionSynthesiser::clearLayerMappings()
 {
     registeredByMidiNote.clear();

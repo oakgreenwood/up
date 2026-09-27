@@ -19,7 +19,9 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
                                                               float sustainAmount,
                                                               float sustainMakeupGain,
                                                               SustainTailShaper& sustainShaper,
-                                                              NoteStartDeclicker& declicker)
+                                                              NoteStartDeclicker& declicker,
+                                                              NoiseTriggerTracker& noiseTrigger,
+                                                              float* noiseHits)
 {
     Result result;
 
@@ -78,6 +80,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
         {
             state.sourceSamplePosition = std::fmod(state.sourceSamplePosition, (double) sourceNumSamples);
             sustainShaper.resetPosition();
+            noiseTrigger.restartLoop();
             return false;
         }
 
@@ -116,6 +119,8 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
 
             const float env = adsr.getNextSample();
             const float gain = env * velocityGain * sampleGain.getNextValue();
+
+            noiseHits[i] = noiseTrigger.advance(getOriginalSourceTimeSec(), gain);
 
             float sampleL = inL * gain;
             float sampleR = inR * gain;
@@ -191,6 +196,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
 
         const float env = adsr.getNextSample();
         const float gain = env * velocityGain * sampleGain.getNextValue();
+        noiseHits[i] = noiseTrigger.advance(getOriginalSourceTimeSec(), gain);
 
         float sampleL = inL * gain;
         float sampleR = inR * gain;

@@ -32,7 +32,7 @@ when behavior changes.
 - `Source/Parameters/SampleSpecificRealtimeCache.cpp`: fixed-size, lock-free
   realtime cache for per-MIDI-note sample-specific playback values.
 - `Source/Midi/MidiNoteActivityState.cpp`: fixed-size, lock-free handoff for
-  per-MIDI-note UI activity velocities and latest-note editor selection.
+  per-MIDI-note UI activity velocities and last-played sample memory.
 - `Source/UI/SampleGroupSelector.cpp`: bottom UI selector for choosing the
   currently edited sample group.
 - `Source/SampleLibrary/PercussionSampleLibrary.cpp`: embedded BinaryData
@@ -66,6 +66,16 @@ when behavior changes.
   and message-thread stereo spectrum FFT.
 - `Source/Effects/OttProcessor.cpp`: global three-band upward/downward
   compression after Rzhavchina, with a single OTT amount control.
+- `Source/Playback/BackgroundNoisePlayer.cpp`: embedded noise loading and
+  background file import, portable saved audio, pinned source publication,
+  immutable waveform summaries, trimmed looping playback and declick fades,
+  mixed after global effects.
+- `Source/UI/NoiseWaveformEditor.cpp`: waveform display and draggable noise
+  start/end handles with host parameter gestures and audio-file drop handling.
+- `Source/Effects/NoiseSidechain.h`: fixed-capacity hit capture, attack/release
+  envelopes and bipolar noise pump/follow modulation.
+- `Source/Playback/NoiseTrigger.h`: immutable onset/peak records, original-time
+  transient tracking with 80/20 hit strength, and prepared voice-latency delay.
 - `Source/SampleMetadata.cpp`: transient JSON lookup and parsing.
 - `CMakeLists.txt`: plugin target, formats, BinaryData resources, JUCE, and
   RubberBand integration.

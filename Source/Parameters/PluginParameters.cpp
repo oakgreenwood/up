@@ -1,5 +1,7 @@
 #include "PluginParameters.h"
 #include "SampleSpecificRealtimeCache.h"
+#include "Playback/BackgroundNoisePlayer.h"
+#include "SampleLibrary/PercussionSampleLibrary.h"
 
 namespace PluginParameters
 {
@@ -91,6 +93,14 @@ namespace PluginParameters
     bool isSampleSpecificParameterId(const juce::String& parameterId) noexcept
     {
         return findSampleSpecificParameter(parameterId) != nullptr;
+    }
+
+    juce::StringArray getNoiseTriggerNames()
+    {
+        juce::StringArray names { "All samples" };
+        for (const auto& group : PercussionSampleLibrary::getEmbeddedSampleGroups())
+            names.add(juce::String(group.mappedNoteIndex));
+        return names;
     }
 
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
@@ -185,6 +195,46 @@ namespace PluginParameters
                 juce::NormalisableRange<float>(-15.0f, 15.0f, 0.1f), 0.0f,
                 juce::AudioParameterFloatAttributes().withLabel("dB")));
         }
+        // Append global noise controls so all existing host indices stay stable.
+        layout.add(std::make_unique<juce::AudioParameterChoice>(
+            noiseSourceId, "Noise source", BackgroundNoisePlayer::getSourceNames(), 0));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            noiseGainDbId, "Noise gain",
+            juce::NormalisableRange<float>(noiseGainDbSilence, noiseGainDbMaximum, 0.1f),
+            noiseGainDbSilence,
+            juce::AudioParameterFloatAttributes().withLabel("dB")
+                .withStringFromValueFunction([] (float value, int)
+                {
+                    return value <= noiseGainDbSilence ? juce::String::fromUTF8("\xe2\x88\x92\xe2\x88\x9e")
+                        : (value > 0.0f ? "+" : "") + juce::String(value, 1);
+                })
+                .withValueFromStringFunction([] (const juce::String& text)
+                {
+                    return text.contains(juce::String::charToString(0x221e)) || text.containsIgnoreCase("inf")
+                        ? noiseGainDbSilence : text.getFloatValue();
+                })));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            noiseModulationId, "Noise pump / follow",
+            juce::NormalisableRange<float>(-1.0f, 1.0f, 0.01f), 0.0f));
+        layout.add(std::make_unique<juce::AudioParameterChoice>(
+            noiseTriggerId, "Noise trigger", getNoiseTriggerNames(), 0));
+        juce::NormalisableRange<float> timeRange(1.0f, 2000.0f, 1.0f);
+        timeRange.setSkewForCentre(100.0f);
+        // Inert legacy slots preserve host parameter indices and old state.
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            noiseAttackMsId, "Noise attack (legacy)", timeRange, noiseAttackMsDefault,
+            juce::AudioParameterFloatAttributes().withLabel("ms")));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            noiseReleaseMsId, "Noise release", timeRange, noiseReleaseMsDefault,
+            juce::AudioParameterFloatAttributes().withLabel("ms")));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            noiseStartId, "Noise start", juce::NormalisableRange<float>(0.0f, 1.0f), 0.0f));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            noiseEndId, "Noise end", juce::NormalisableRange<float>(0.0f, 1.0f), 1.0f));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            noiseRiseDbId, "Noise rise (legacy)",
+            juce::NormalisableRange<float>(0.0f, noiseRiseDbMaximum, 0.1f), noiseRiseDbDefault,
+            juce::AudioParameterFloatAttributes().withLabel("dB")));
         return layout;
     }
 }

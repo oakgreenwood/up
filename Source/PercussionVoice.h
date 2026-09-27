@@ -6,6 +6,7 @@
 #include "Effects/FormantShifter.h"
 #include "Effects/SampleEqualiser.h"
 #include "Effects/SampleSpectrum.h"
+#include "Effects/NoiseSidechain.h"
 #include "Effects/PsolaFormantShifter.h"
 #include "Playback/NoteStartDeclicker.h"
 #include "Playback/RealtimeWarpPlayer.h"
@@ -47,6 +48,7 @@ public:
     void setWarpCachePrewarmer(WarpCachePrewarmer* cache) noexcept { warpCachePrewarmer = cache; }
 
     void setSampleSpectrum(SampleSpectrum* spectrum) noexcept { sampleSpectrum = spectrum; }
+    void setNoiseSidechain(NoiseSidechain* detector) noexcept { noiseSidechain = detector; }
 
 private:
     void updateEqualiser(bool immediate = false) noexcept;
@@ -111,6 +113,10 @@ private:
     FormantShifter formantColouration;
     SampleEqualiser equaliser;
     SampleSpectrum* sampleSpectrum = nullptr;
+    NoiseSidechain* noiseSidechain = nullptr;
+    NoiseTriggerTracker noiseTrigger;
+    NoiseTriggerDelay noiseTriggerDelay;
+    std::array<float, FormantShifter::hopSize> noiseHits {};
     int formantDrainSamples = FormantShifter::tailSamples
                               + PsolaFormantShifter::tailForSampleRate(44100.0);
     juce::AudioBuffer<float> voiceScratch { 2, FormantShifter::hopSize };

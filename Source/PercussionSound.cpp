@@ -67,6 +67,40 @@ PercussionSound::PercussionSound(const juce::String& soundName,
 
     warpEnabled = metadata->warp;
 
+    // Prepare onset strength off the audio thread. One-shots have one hit;
+    // loop/warp sounds use their JSON onsets, independently of Punch settings.
+    if (!isOneShot() && metadata->hasTransientJson)
+        for (const double time : metadata->transients)
+            if (std::isfinite(time) && time >= 0.0 && time < lengthInSeconds)
+                noiseTriggerPoints.push_back({ time, 0.0f });
+    std::sort(noiseTriggerPoints.begin(), noiseTriggerPoints.end(),
+        [](const auto& a, const auto& b) { return a.timeSeconds < b.timeSeconds; });
+    noiseTriggerPoints.erase(std::unique(noiseTriggerPoints.begin(), noiseTriggerPoints.end(),
+        [](const auto& a, const auto& b) { return a.timeSeconds == b.timeSeconds; }),
+        noiseTriggerPoints.end());
+    if (noiseTriggerPoints.empty())
+        noiseTriggerPoints.push_back({ 0.0, 0.0f });
+
+    for (size_t i = 0; i < noiseTriggerPoints.size(); ++i)
+    {
+        auto& point = noiseTriggerPoints[i];
+        const double nextTime = i + 1 < noiseTriggerPoints.size()
+            ? noiseTriggerPoints[i + 1].timeSeconds : lengthInSeconds;
+        const double endTime = isOneShot() ? lengthInSeconds
+            : std::min(nextTime, point.timeSeconds + 0.05);
+        const int startFrame = static_cast<int>(juce::jlimit(0.0, static_cast<double>(numSamples),
+            point.timeSeconds * sourceSampleRate));
+        const int endFrame = static_cast<int>(juce::jlimit(static_cast<double>(startFrame),
+            static_cast<double>(numSamples), std::ceil(endTime * sourceSampleRate)));
+        for (int ch = 0; ch < juce::jmin(2, data.getNumChannels()); ++ch)
+            for (int frame = startFrame; frame < endFrame; ++frame)
+            {
+                const float value = data.getSample(ch, frame);
+                if (std::isfinite(value))
+                    point.peak = std::max(point.peak, std::abs(value));
+            }
+    }
+
     DBG("PercussionSound: metadata prepared for " << wavResourceNameForMetadata
         << " (hasTransientJson=" << (metadata->hasTransientJson ? "true" : "false")
         << ", sampleRate=" << metadata->sampleRate

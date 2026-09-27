@@ -55,26 +55,10 @@ namespace
              + parsed.pitchIndex
              - 1;
     }
-}
 
-namespace PercussionSampleLibrary
-{
-    void loadEmbeddedSamples(PercussionSynthesiser& sampler,
-                             double originalBpm,
-                             std::vector<SampleGroupInfo>* loadedSampleGroups)
+    std::vector<ParsedSampleResource> collectSampleResources(std::map<int, int>& maxPitchIndexByNoteIndex)
     {
-        if (loadedSampleGroups != nullptr)
-            loadedSampleGroups->clear();
-
-        juce::AudioFormatManager formatManager;
-        formatManager.registerBasicFormats();
-
-        DBG("BinaryData::namedResourceListSize = " << BinaryData::namedResourceListSize);
-        for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
-            DBG("  Resource[" << i << "]: " << BinaryData::namedResourceList[i]);
-
         std::vector<ParsedSampleResource> sampleResources;
-        std::map<int, int> maxPitchIndexByNoteIndex;
 
         for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
         {
@@ -113,6 +97,49 @@ namespace PercussionSampleLibrary
             auto& maxPitchIndex = maxPitchIndexByNoteIndex[parsed.noteIndex];
             maxPitchIndex = juce::jmax(maxPitchIndex, parsed.pitchIndex);
         }
+
+        return sampleResources;
+    }
+
+}
+
+namespace PercussionSampleLibrary
+{
+    std::vector<SampleGroupInfo> getEmbeddedSampleGroups()
+    {
+        std::map<int, int> maxPitchIndexByNoteIndex;
+        const auto resources = collectSampleResources(maxPitchIndexByNoteIndex);
+        std::map<int, SampleGroupInfo> groups;
+        for (const auto& resource : resources)
+        {
+            const int mapped = getMappedNoteIndex(resource.parsed, maxPitchIndexByNoteIndex);
+            const int note = 48 + mapped - 1;
+            if (note >= 0 && note < 128)
+                groups.emplace(mapped, SampleGroupInfo {
+                    resource.parsed.noteIndex, resource.parsed.pitchIndex, mapped, note });
+        }
+        std::vector<SampleGroupInfo> result;
+        for (const auto& group : groups)
+            result.push_back(group.second);
+        return result;
+    }
+
+    void loadEmbeddedSamples(PercussionSynthesiser& sampler,
+                             double originalBpm,
+                             std::vector<SampleGroupInfo>* loadedSampleGroups)
+    {
+        if (loadedSampleGroups != nullptr)
+            loadedSampleGroups->clear();
+
+        juce::AudioFormatManager formatManager;
+        formatManager.registerBasicFormats();
+
+        DBG("BinaryData::namedResourceListSize = " << BinaryData::namedResourceListSize);
+        for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
+            DBG("  Resource[" << i << "]: " << BinaryData::namedResourceList[i]);
+
+        std::map<int, int> maxPitchIndexByNoteIndex;
+        const auto sampleResources = collectSampleResources(maxPitchIndexByNoteIndex);
 
         std::map<int, SampleGroupInfo> sampleGroupsByMappedNoteIndex;
 

@@ -8,6 +8,7 @@
 
 #include "../PercussionSound.h"
 #include "NoteStartDeclicker.h"
+#include "NoiseTrigger.h"
 #include "SustainTailShaper.h"
 
 class RealtimeWarpPlayer
@@ -51,7 +52,9 @@ public:
                   float sustainMakeupGain,
                   double pitchScaleMultiplier,
                   SustainTailShaper& sustainShaper,
-                  NoteStartDeclicker& declicker);
+                  NoteStartDeclicker& declicker,
+                  NoiseTriggerTracker& noiseTrigger,
+                  float* noiseHits);
 
 private:
     static double makeRubberBandRatio(double musicalTimeRatio,

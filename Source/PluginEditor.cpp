@@ -7,8 +7,24 @@
 
 namespace
 {
-constexpr uint32_t midiSampleSelectionDebounceMs = 500;
 constexpr int editorPadding = 12;
+
+class NoisePanelSurface final : public juce::Component
+{
+public:
+    NoisePanelSurface()
+    {
+        setInterceptsMouseClicks(false, false);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.setColour(juce::Colours::black);
+        g.setFont(juce::Font(juce::FontOptions(28.0f, juce::Font::bold)));
+        g.drawText("NOISE RYTHM", 0, 0, getWidth(), 42, juce::Justification::centredLeft);
+        g.drawRect(getLocalBounds().withTrimmedTop(48).toFloat().reduced(1.0f), 2.0f);
+    }
+};
 
 class SampleEffectsModalSurface final : public juce::Component
 {
@@ -464,7 +480,8 @@ void NumericValueInput::refreshValue()
 AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAudioProcessor& p)
     : AudioProcessorEditor (&p),
       processorRef (p),
-      equaliserEditor(p)
+      equaliserEditor(p),
+      noiseWaveform(p)
 {
     juce::ignoreUnused (processorRef);
     setSize (900, 600);
@@ -507,6 +524,104 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 
     addAndMakeVisible(ottLabel);
     configureKnobLabel(ottLabel, "OTT");
+
+    noisePanelSurface = std::make_unique<NoisePanelSurface>();
+    addAndMakeVisible(*noisePanelSurface);
+
+    const auto configureNoiseCaption = [this] (juce::Label& label, const char* text)
+    {
+        addAndMakeVisible(label);
+        label.setText(text, juce::dontSendNotification);
+        label.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+        label.setColour(juce::Label::textColourId, PluginUI::noiseCaptionColour);
+        label.setJustificationType(juce::Justification::centredLeft);
+        label.setBorderSize(juce::BorderSize<int>(0));
+    };
+    configureNoiseCaption(noiseSourceLabel, "SOURCE");
+    configureNoiseCaption(noiseTriggerLabel, "TRIGGER");
+    configureNoiseCaption(noiseLabel, "VOLUME");
+    configureNoiseCaption(noiseModulationLabel, "PUMP");
+    configureNoiseCaption(noiseFollowLabel, "FOLLOW");
+    noiseFollowLabel.setJustificationType(juce::Justification::centredRight);
+    addAndMakeVisible(noiseWaveform);
+
+    addAndMakeVisible(noiseSourceSelector);
+    noiseSourceSelector.setName("Noise source");
+    noiseSourceSelector.setComponentID(PluginUI::noiseSourceSelectorId);
+    noiseSourceSelector.setLookAndFeel(customLNF.get());
+    noiseSourceSelector.addItemList(BackgroundNoisePlayer::getSourceNames(), 1);
+    noiseSourceSelector.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
+    noiseSourceSelector.setColour(juce::ComboBox::textColourId, juce::Colours::black);
+    noiseSourceSelector.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
+    noiseSourceSelector.setColour(juce::ComboBox::arrowColourId, juce::Colours::black);
+    noiseSourceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+        processorRef.parameters, PluginParameters::noiseSourceId, noiseSourceSelector);
+
+    addAndMakeVisible(noiseGainSlider);
+    noiseGainSlider.setName("Noise gain");
+    noiseGainSlider.setComponentID(PluginUI::noiseGainSliderId);
+    noiseGainSlider.setLookAndFeel(customLNF.get());
+    noiseGainSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    noiseGainSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    noiseGainSlider.setDoubleClickReturnValue(true, PluginParameters::noiseGainDbSilence);
+    noiseGainSlider.setPopupDisplayEnabled(true, true, this);
+    noiseGainSlider.setColour(juce::Slider::thumbColourId, juce::Colours::black);
+    noiseGainSlider.setColour(juce::Slider::trackColourId, juce::Colours::black);
+    noiseGainSlider.setColour(juce::Slider::backgroundColourId, juce::Colour(0xffdddddd));
+    bindSliderToParameter(noiseGainSlider, PluginParameters::noiseGainDbId, noiseGainAttachment);
+    noiseGainSlider.setTextValueSuffix(" dB");
+
+    addAndMakeVisible(noiseTriggerSelector);
+    noiseTriggerSelector.setName("Noise trigger");
+    noiseTriggerSelector.setComponentID(PluginUI::noiseTriggerSelectorId);
+    noiseTriggerSelector.setLookAndFeel(customLNF.get());
+    noiseTriggerSelector.setTooltip("Samples whose audio controls the noise envelope.");
+    noiseTriggerSelector.addItemList(PluginParameters::getNoiseTriggerNames(), 1);
+    noiseTriggerSelector.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
+    noiseTriggerSelector.setColour(juce::ComboBox::textColourId, juce::Colours::black);
+    noiseTriggerSelector.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
+    noiseTriggerSelector.setColour(juce::ComboBox::arrowColourId, juce::Colours::black);
+    noiseTriggerAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+        processorRef.parameters, PluginParameters::noiseTriggerId, noiseTriggerSelector);
+
+    addAndMakeVisible(noiseModulationSlider);
+    noiseModulationSlider.setName("Noise pump / follow");
+    noiseModulationSlider.setComponentID(PluginUI::noiseModulationSliderId);
+    noiseModulationSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    noiseModulationSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    noiseModulationSlider.setLookAndFeel(customLNF.get());
+    noiseModulationSlider.setDoubleClickReturnValue(true, 0.0);
+    noiseModulationSlider.setTooltip("Left: pump. Centre: unchanged. Right: lower background noise; trigger boost reaches maximum early.");
+    bindSliderToParameter(noiseModulationSlider, PluginParameters::noiseModulationId, noiseModulationAttachment);
+
+    const auto configureNoiseKnob = [this] (ImageKnobSlider& slider, juce::Label& label,
+        NumericValueInput& valueInput, const char* componentId, const char* parameterId,
+        const char* name, const char* unit, float defaultValue,
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment)
+    {
+        addAndMakeVisible(slider);
+        slider.setName(juce::String("Noise ") + name);
+        slider.setComponentID(componentId);
+        slider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+        slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        slider.setLookAndFeel(customLNF.get());
+        slider.setDoubleClickReturnValue(true, defaultValue);
+        slider.setMouseDragSensitivity(150);
+        bindSliderToParameter(slider, parameterId, attachment);
+        configureSignedDecimalValueInput(slider, unit);
+        if (juce::String(unit) == " ms")
+            slider.textFromValueFunction = [] (double value) { return juce::String(value, 0) + " ms"; };
+        slider.updateText();
+        valueInput.discardEdit();
+        addAndMakeVisible(valueInput);
+        addAndMakeVisible(label);
+        configureKnobLabel(label, name);
+        label.setColour(juce::Label::textColourId, PluginUI::noiseCaptionColour);
+        label.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+    };
+    configureNoiseKnob(noiseReleaseSlider, noiseReleaseLabel, noiseReleaseValueInput,
+        PluginUI::noiseReleaseSliderId, PluginParameters::noiseReleaseMsId, "RELEASE", " ms",
+        PluginParameters::noiseReleaseMsDefault, noiseReleaseAttachment);
 
     sampleEffectsModalSurface = std::make_unique<SampleEffectsModalSurface>();
     addAndMakeVisible(*sampleEffectsModalSurface);
@@ -653,8 +768,6 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
     sampleGroupSelector.onSelectedIndexChanged = [this] (int selectedIndex)
     {
-        midiSelectionBurstActive = false;
-        pendingMidiSampleGroupIndex = -1;
         selectSampleGroupForEditing(selectedIndex);
     };
     addAndMakeVisible(sampleGroupSelector);
@@ -664,6 +777,13 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     editSamplesButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
     editSamplesButton.onClick = [this]
     {
+        const int midiNote = processorRef.getLatestMidiNoteOnNote();
+        if (midiNote >= 0 && midiNote < AudioPluginAudioProcessor::midiNoteActivityCount)
+        {
+            const int groupIndex = sampleGroupIndexByMidiNote[(size_t) midiNote];
+            if (groupIndex >= 0)
+                selectSampleGroupForEditing(groupIndex);
+        }
         setSampleEffectsModalVisible(true);
     };
 
@@ -731,6 +851,11 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     rzhavSlider.setLookAndFeel(nullptr);
     sustainSlider.setLookAndFeel(nullptr);
     ottSlider.setLookAndFeel(nullptr);
+    noiseModulationSlider.setLookAndFeel(nullptr);
+    noiseGainSlider.setLookAndFeel(nullptr);
+    noiseSourceSelector.setLookAndFeel(nullptr);
+    noiseTriggerSelector.setLookAndFeel(nullptr);
+    noiseReleaseSlider.setLookAndFeel(nullptr);
     sampleGainSlider.setLookAndFeel(nullptr);
     samplePunchSlider.setLookAndFeel(nullptr);
     samplePitchSlider.setLookAndFeel(nullptr);
@@ -884,10 +1009,16 @@ void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBe
         &rzhavSlider, &rzhavLabel,
         &sustainSlider, &sustainLabel,
         &ottSlider, &ottLabel,
+        &noiseSourceSelector, &noiseGainSlider, &noiseLabel,
+        &noiseSourceLabel, &noiseTriggerLabel, &noiseFollowLabel, &noiseWaveform,
+        &noiseTriggerSelector, &noiseModulationSlider, &noiseModulationLabel,
+        &noiseReleaseSlider, &noiseReleaseLabel, &noiseReleaseValueInput,
         &warpButton
     };
     for (auto* component : globalEffectComponents)
         component->setVisible(!shouldBeVisible);
+    if (noisePanelSurface != nullptr)
+        noisePanelSurface->setVisible(!shouldBeVisible);
 
     repaint();
 }
@@ -969,42 +1100,22 @@ void AudioPluginAudioProcessorEditor::selectSampleGroupForEditing(int groupIndex
 
 void AudioPluginAudioProcessorEditor::timerCallback()
 {
+    const auto importedName = processorRef.getImportedNoiseName();
+    if (importedName != displayedImportedNoiseName)
+    {
+        displayedImportedNoiseName = importedName;
+        const int itemId = BackgroundNoisePlayer::importedSourceIndex() + 1;
+        const bool selected = noiseSourceSelector.getSelectedId() == itemId;
+        noiseSourceSelector.changeItemText(itemId,
+            importedName.isNotEmpty() ? importedName : "Imported audio");
+        if (selected)
+            noiseSourceSelector.setSelectedId(itemId, juce::dontSendNotification);
+    }
     if (pendingApplyToAllParameter != nullptr)
     {
         auto* parameter = pendingApplyToAllParameter;
         pendingApplyToAllParameter = nullptr;
         selectApplyToAllEffect(*parameter);
-    }
-
-    const uint32_t latestNoteOnGeneration = processorRef.getLatestMidiNoteOnGeneration();
-    if (observedLatestMidiNoteOnGeneration != latestNoteOnGeneration)
-    {
-        observedLatestMidiNoteOnGeneration = latestNoteOnGeneration;
-        const int midiNote = processorRef.getLatestMidiNoteOnNote();
-        if (midiNote >= 0 && midiNote < AudioPluginAudioProcessor::midiNoteActivityCount)
-        {
-            const int groupIndex = sampleGroupIndexByMidiNote[(size_t) midiNote];
-            if (groupIndex >= 0)
-            {
-                pendingMidiSampleGroupIndex = groupIndex;
-                lastMappedMidiNoteOnTimeMs = juce::Time::getMillisecondCounter();
-                if (!midiSelectionBurstActive)
-                {
-                    midiSelectionBurstActive = true;
-                    selectSampleGroupForEditing(groupIndex);
-                }
-            }
-        }
-    }
-
-    if (midiSelectionBurstActive
-        && static_cast<uint32_t>(juce::Time::getMillisecondCounter()
-                                 - lastMappedMidiNoteOnTimeMs) >= midiSampleSelectionDebounceMs)
-    {
-        midiSelectionBurstActive = false;
-        if (pendingMidiSampleGroupIndex >= 0)
-            selectSampleGroupForEditing(pendingMidiSampleGroupIndex);
-        pendingMidiSampleGroupIndex = -1;
     }
 
     if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
@@ -1079,6 +1190,25 @@ void AudioPluginAudioProcessorEditor::resized()
     placeKnobWithLabel(rzhavSlider, rzhavLabel, 0, 222);
     placeKnobWithLabel(sustainSlider, sustainLabel, 81, 222);
     placeKnobWithLabel(ottSlider, ottLabel, 162, 222);
+    const int noisePanelWidth = juce::roundToInt((getWidth() - 290 - editorPadding) / 1.5);
+    const juce::Rectangle<int> noiseBounds(290, editorPadding, noisePanelWidth, 500);
+    if (noisePanelSurface != nullptr)
+        noisePanelSurface->setBounds(noiseBounds);
+    const int noiseLeft = noiseBounds.getX() + 24;
+    const int noiseWidth = noiseBounds.getWidth() - 48;
+    const int noiseTop = noiseBounds.getY();
+    noiseSourceLabel.setBounds(noiseLeft, noiseTop + 62, noiseWidth, 20);
+    noiseSourceSelector.setBounds(noiseLeft, noiseTop + 83, noiseWidth, 30);
+    noiseWaveform.setBounds(noiseLeft - 6, noiseTop + 125, noiseWidth + 12, 78);
+    noiseTriggerLabel.setBounds(noiseLeft, noiseTop + 218, noiseWidth, 20);
+    noiseTriggerSelector.setBounds(noiseLeft, noiseTop + 239, noiseWidth, 30);
+    noiseLabel.setBounds(noiseLeft, noiseTop + 280, noiseWidth, 20);
+    noiseGainSlider.setBounds(noiseLeft - 8, noiseTop + 302, noiseWidth + 16, 26);
+    noiseModulationLabel.setBounds(noiseLeft, noiseTop + 335, noiseWidth / 2, 20);
+    noiseFollowLabel.setBounds(noiseLeft + noiseWidth / 2, noiseTop + 335, noiseWidth / 2, 20);
+    noiseModulationSlider.setBounds(noiseLeft - 8, noiseTop + 358, noiseWidth + 16, 26);
+    placeKnobWithValueAndLabel(noiseReleaseSlider, noiseReleaseLabel, noiseReleaseValueInput,
+                               noiseLeft + noiseWidth / 2 - labelWidth / 2, noiseTop + 412);
 
     const int modalHeight = getHeight() * 7 / 10;
     const auto modalBounds = juce::Rectangle<int>(

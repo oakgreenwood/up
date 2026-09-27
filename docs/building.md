@@ -29,10 +29,12 @@ code are added for macOS arm64/x86_64/universal or Windows.
 ## Build Command
 
 For a macOS Debug plugin build, run `./build.sh` from the repository root. It
-configures Xcode and builds both VST3 and AU. It uses `sudo` to replace the VST3
-bundle in `/Library/Audio/Plug-Ins/VST3`; the AU remains only in
-`build/ulichperc_artefacts/Debug/AU/ulichpercs.component`. This helper is not a
-Windows build command.
+configures Xcode and builds both VST3 and AU. CMake's enabled
+`COPY_PLUGIN_AFTER_BUILD` also copies both formats into the user's
+`~/Library/Audio/Plug-Ins/VST3` and `~/Library/Audio/Plug-Ins/Components` directories.
+The script then uses `sudo` to replace the system VST3 bundle in
+`/Library/Audio/Plug-Ins/VST3`. Build outputs remain in
+`build/ulichperc_artefacts/Debug/`. This helper is not a Windows build command.
 
 ## Standalone App (macOS)
 
@@ -96,6 +98,30 @@ either validation or terminal-log capture fails. Validation logs are ignored by
 Git.
 
 ## CMake Rules
+
+`noise/*.wav` is embedded in a separate `ulichpercNoiseData` target with the
+`NoiseBinaryData` namespace/header, keeping noise out of percussion discovery.
+The current inventory is Brazil Farm and Lviv Bicycle. CMake's `CONFIGURE_DEPENDS`
+glob updates the inventory on rebuild when files are added/removed; distributed
+plugins do not scan the project directory at runtime. Both WAV files are bundled
+in every format. Playback compiles from `Source/Playback/BackgroundNoisePlayer.*`
+using existing JUCE modules on macOS and Windows. The folder must remain populated
+(CMake requires resources for the binary-data target).
+
+Noise pump/follow detection is header-only in `Source/Effects/NoiseSidechain.h`,
+listed with the other effect sources. It reuses JUCE and standard C++ on macOS
+and Windows, with no additional dependency or platform-specific implementation.
+
+`Source/UI/NoiseWaveformEditor.*` is included in the same plugin target and uses
+the existing JUCE GUI modules. Its peak summaries are prepared by the noise
+loader; no file reader, thumbnail worker or additional library is needed in UI.
+
+Runtime noise import uses JUCE's existing audio-format module and a JUCE worker
+thread. `JUCE_USE_MP3AUDIOFORMAT=1` enables JUCE's bundled MP3 decoder on all
+targets, alongside default WAV/AIFF/FLAC/Ogg and platform formats. No external
+codec package is required on macOS arm64/x86_64/universal or Windows. Imported
+state uses float PCM WAV, so reopening does not depend on the original codec
+being installed on the destination platform.
 
 - Keep configuration cross-platform without hardcoded paths.
 - Use target-based `target_sources`, `target_link_libraries`, and

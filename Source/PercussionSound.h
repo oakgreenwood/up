@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "SampleMetadata.h"
+#include "Playback/NoiseTrigger.h"
 
 class WarpCachePrewarmer;
 
@@ -40,6 +41,7 @@ public:
     const juce::AudioBuffer<float>& getAudioData() const noexcept { return data; }
     double getSourceSampleRate() const noexcept { return sourceSampleRate; }
     int getMidiRootNote() const noexcept { return midiRootNote; }
+    const std::vector<NoiseTriggerPoint>& getNoiseTriggerPoints() const noexcept { return noiseTriggerPoints; }
     bool isOneShot() const noexcept { return !warpEnabled && (metadata == nullptr || !metadata->loop); }
     // Assigned once while the warp-cache worker builds its immutable inventory.
     void setWarpCacheIndex(int index) noexcept { warpCacheIndex = index; }
@@ -74,6 +76,7 @@ private:
     juce::String name;
 
     juce::AudioBuffer<float> data;
+    std::vector<NoiseTriggerPoint> noiseTriggerPoints;
 
     double sourceSampleRate = 48000.0;
     int midiRootNote = 60;

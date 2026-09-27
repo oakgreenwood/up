@@ -12,6 +12,14 @@ namespace PluginUI
 inline constexpr const char* rzhavSliderId = "rzhavSlider";
 inline constexpr const char* sustainSliderId = "sustainSlider";
 inline constexpr const char* ottSliderId = "ottSlider";
+inline constexpr const char* noiseModulationSliderId = "noiseModulationSlider";
+inline constexpr const char* noiseGainSliderId = "noiseGainSlider";
+inline constexpr const char* noiseSourceSelectorId = "noiseSourceSelector";
+inline constexpr const char* noiseTriggerSelectorId = "noiseTriggerSelector";
+inline const juce::Colour noisePanelBackground { 0xffcdd1c3 };
+inline const juce::Colour noiseCaptionColour { 0xff6b6d68 };
+inline const juce::Colour noiseTrackColour { 0xff8e8b8b };
+inline constexpr const char* noiseReleaseSliderId = "noiseReleaseSlider";
 inline constexpr const char* sampleGainSliderId = "sampleGainSlider";
 inline constexpr const char* samplePunchSliderId = "samplePunchSlider";
 inline constexpr const char* samplePitchSliderId = "samplePitchSlider";
@@ -25,6 +33,15 @@ class CustomLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     CustomLookAndFeel();
+
+    void drawComboBox(juce::Graphics&, int width, int height, bool isButtonDown,
+                      int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox&) override;
+    juce::Font getComboBoxFont(juce::ComboBox&) override;
+    void positionComboBoxText(juce::ComboBox&, juce::Label&) override;
+
+    void drawLinearSlider(juce::Graphics&, int x, int y, int width, int height,
+                          float sliderPos, float minSliderPos, float maxSliderPos,
+                          juce::Slider::SliderStyle, juce::Slider&) override;
 
     void drawRotarySlider(juce::Graphics& g,
                           int x,
