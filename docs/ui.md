@@ -20,13 +20,21 @@ with its left edge and height unchanged. Dropdowns, waveform and slider tracks
 use the narrower bounds; the centered Release knob remains 47x47 px, preserving
 its image proportions. Text sizes are unchanged.
 
-Source lists every embedded `noise/*.wav` without its extension, followed by an
-`Imported audio` slot showing the loaded filename when available. Both dropdowns
+Source starts with an `Upload file` action, then lists every embedded `noise/*.wav` without its extension, followed by
+one entry for each custom noise. Empty reserved host slots are omitted. Both dropdowns
 use bold black text, simple chevrons and no box/background; long source names
 truncate with an ellipsis. Trigger defaults to All samples and includes each
 numbered sample group. Volume fills its thick track from the left; modulation
 fills from centre toward the thumb, with PUMP/FOLLOW captions at opposite ends.
 Both sliders have black rounded vertical handles.
+
+`Upload file` opens an asynchronous native file picker with multi-selection and
+an extension filter from the same registered audio decoders used by noise imports.
+It adds files through the existing import queue. The action is not a source or
+host parameter choice: the default and current selection stay unchanged when
+opening or cancelling the picker. It stays first when the custom list refreshes.
+Closing the editor cancels its pending picker. Selected files still undergo the
+normal decode and size checks; an extension alone does not guarantee valid audio.
 
 `NoiseWaveformEditor` draws the full source from 1024 immutable min/max bins,
 combining stereo peaks without cancellation and scaling by the source peak for
@@ -51,19 +59,28 @@ the trim-stop fade, bypass and release clear it. The line resumes when playback
 restarts. Pump/Follow modulation does not stop the underlying loop or its cursor.
 The line has no marker, label or separate interaction.
 
-Drop one supported audio file onto the waveform to replace the imported noise.
-Import runs in the background, selects the custom source and resets its trim to
-the full file. Imported display names remove square brackets and their contents
+Drop one or several supported audio files anywhere over the plugin editor to add custom
+noises without replacing earlier entries. Imports queue in the background; the
+last accepted file is selected and trim resets to the full file. Previously
+added sounds remain selectable. Up to 64 custom entries are supported. Imported
+display names remove square brackets and their contents
 (including multiple/nested groups), then trim/collapse whitespace. For example,
 `Street [120 BPM] [take 2].wav` displays as `Street`; an empty result displays as
-`Imported audio`. This cleaned name is saved and is also applied to older
+`Imported audio`. Repeated names get numeric suffixes. This cleaned name is saved
+and is also applied to older
 restored imports. The actual file on disk is not renamed.
 Gain remains unchanged, so a muted instance stays muted. WAV,
 AIFF, FLAC, Ogg/Vorbis and MP3 are supported, with additional codecs supplied by
 the platform. Imported audio is embedded in saved plugin state and survives
-moving/deleting the original file. Another drop replaces the custom entry;
-bundled choices remain available. Decode failures show an error dialog. The
-128 MiB limit applies to decoded mono/stereo float audio, not compressed file size.
+moving/deleting the original file. Further drops append entries; bundled and
+previous custom choices remain available. Decode failures show an error dialog. The
+128 MiB per-file and 512 MiB total-library limits apply to decoded mono/stereo
+float audio, not compressed file size. Failed files leave existing entries intact.
+While supported files hover anywhere over the editor, the entire noise panel
+is covered by an opaque `#A5A4A4` overlay with centred black `Drop noise` text.
+The editor owns the drop target, so moving across child controls keeps the
+overlay active. It clears on exit, drop or editor hiding. Drops also work while
+Edit Samples is open; the overlay appears at the noise panel's usual bounds.
 
 Volume defaults fully left to `−∞ dB` (off); its next step is -60 dB, then
 0.1 dB steps through +10 dB. Hover/drag shows gain in the popup; double-click

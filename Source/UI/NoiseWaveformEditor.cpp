@@ -35,10 +35,10 @@ void NoiseWaveformEditor::refresh()
         static_cast<float>(processor.parameters.getParameter(PluginParameters::noiseSourceId)->getNumSteps() - 1),
         rawSource)) : 0;
     const bool sourceChanged = source != displayedSource;
-    const auto revision = processor.getNoiseImportRevision();
+    const auto revision = processor.getNoiseSourceRevision(source);
     const bool importedChanged = revision != displayedRevision;
     displayedRevision = revision;
-    if (sourceChanged || (importedChanged && source == BackgroundNoisePlayer::importedSourceIndex()))
+    if (sourceChanged || (importedChanged && source >= BackgroundNoisePlayer::importedSourceIndex()))
     {
         endDrag();
         displayedSource = source;
@@ -67,19 +67,6 @@ void NoiseWaveformEditor::timerCallback()
     if (error.isNotEmpty())
         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
                                               "Noise import", error);
-}
-
-bool NoiseWaveformEditor::isInterestedInFileDrag(const juce::StringArray& files)
-{
-    return files.size() == 1 && BackgroundNoisePlayer::canImportFile(juce::File(files[0]));
-}
-
-void NoiseWaveformEditor::filesDropped(const juce::StringArray& files, int, int)
-{
-    if (!isInterestedInFileDrag(files))
-        return;
-    endDrag();
-    processor.importNoiseFile(juce::File(files[0]));
 }
 
 void NoiseWaveformEditor::paint(juce::Graphics& g)

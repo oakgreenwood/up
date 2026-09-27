@@ -8,18 +8,22 @@
 #include <cstdint>
 #include <chrono>
 #include <exception>
+#include <algorithm>
 
 juce::StringArray BackgroundNoisePlayer::getSourceNames()
 {
     juce::StringArray names;
     for (int i = 0; i < NoiseBinaryData::namedResourceListSize; ++i)
         names.add(juce::String(NoiseBinaryData::originalFilenames[i]).upToLastOccurrenceOf(".", false, false));
-    names.add("Imported audio");
+    for (int i = 0; i < maximumCustomSources; ++i)
+        names.add("Imported audio " + juce::String(i + 1));
     return names;
 }
 
 BackgroundNoisePlayer::BackgroundNoisePlayer() : juce::Thread("Noise importer")
 {
+    for (auto& identity : publishedIdentities)
+        identity.store(0);
     juce::WavAudioFormat format;
     sources.resize(static_cast<size_t>(NoiseBinaryData::namedResourceListSize));
     for (int i = 0; i < NoiseBinaryData::namedResourceListSize; ++i)
@@ -90,6 +94,8 @@ void BackgroundNoisePlayer::prepareWaveform(Source& source)
 namespace
 {
 constexpr int64_t maximumImportedBytes = 128 * 1024 * 1024;
+// Keep a complete portable library below JUCE/host integer-sized state limits.
+constexpr int64_t maximumLibraryBytes = 512 * 1024 * 1024;
 const juce::Identifier importedStateType { "ImportedNoise" };
 static_assert(std::atomic<int>::is_always_lock_free && std::atomic<uint32_t>::is_always_lock_free);
 static_assert(std::atomic<uint64_t>::is_always_lock_free);
@@ -151,30 +157,48 @@ bool BackgroundNoisePlayer::canImportFile(const juce::File& file)
     return formats.findFormatForFileExtension(file.getFileExtension()) != nullptr;
 }
 
-void BackgroundNoisePlayer::importFile(const juce::File& file)
+int BackgroundNoisePlayer::importFile(const juce::File& file)
 {
+    int index = -1;
     {
         const std::lock_guard<std::mutex> lock(importMutex);
         if (stopping)
         {
             importError = "The noise importer could not start.";
-            return;
+            return -1;
         }
-        requestedFile = file;
-        requestedName = importedDisplayName(file.getFileNameWithoutExtension());
-        requestedWav.clear();
-        importError.clear();
+        for (int i = 0; i < maximumCustomSources; ++i)
+            if (importedNames[static_cast<size_t>(i)].isEmpty())
+            {
+                index = i;
+                break;
+            }
+        if (index < 0)
+        {
+            importError = "This instance already contains 64 custom noises.";
+            return -1;
+        }
+        const auto baseName = importedDisplayName(file.getFileNameWithoutExtension());
+        auto name = baseName;
+        for (int suffix = 2; std::find(importedNames.begin(), importedNames.end(), name)
+                                  != importedNames.end(); ++suffix)
+            name = baseName + " (" + juce::String(suffix) + ")";
+        requests.push_back({ index, file, name, {} });
+        importedNames[static_cast<size_t>(index)] = name;
         importPending = true;
-        importGeneration.fetch_add(1);
+        importedRevision.fetch_add(1);
     }
     importWake.notify_one();
+    return importedSourceIndex() + index;
 }
 
-juce::String BackgroundNoisePlayer::getImportedName() const
+juce::StringArray BackgroundNoisePlayer::getAvailableSourceNames() const
 {
     const std::lock_guard<std::mutex> lock(importMutex);
-    const int slot = publishedImported.load();
-    return slot >= 0 ? importedSlots[static_cast<size_t>(slot)].source->name : juce::String();
+    auto names = getSourceNames();
+    for (int i = 0; i < maximumCustomSources; ++i)
+        names.set(importedSourceIndex() + i, importedNames[static_cast<size_t>(i)]);
+    return names;
 }
 
 juce::String BackgroundNoisePlayer::takeImportError()
@@ -195,10 +219,17 @@ void BackgroundNoisePlayer::writeImportedState(juce::ValueTree& state)
     const int slot = publishedImported.load();
     if (slot >= 0)
     {
-        const auto& source = *importedSlots[static_cast<size_t>(slot)].source;
         juce::ValueTree saved(importedStateType);
-        saved.setProperty("name", source.name, nullptr);
-        saved.setProperty("wav", source.encodedWav, nullptr);
+        const auto& table = importedSlots[static_cast<size_t>(slot)].sources;
+        for (int i = 0; i < maximumCustomSources; ++i)
+            if (const auto& source = table[static_cast<size_t>(i)])
+            {
+                juce::ValueTree entry("Source");
+                entry.setProperty("index", i, nullptr);
+                entry.setProperty("name", source->name, nullptr);
+                entry.setProperty("wav", source->encodedWav, nullptr);
+                saved.appendChild(entry, nullptr);
+            }
         state.appendChild(saved, nullptr);
     }
 }
@@ -208,13 +239,43 @@ void BackgroundNoisePlayer::restoreImportedState(const juce::ValueTree& state)
     const auto saved = state.getChildWithName(importedStateType);
     {
         const std::lock_guard<std::mutex> lock(importMutex);
-        importGeneration.fetch_add(1); // Cancels any older in-flight drop/restore.
-        requestedFile = juce::File{};
-        requestedName = importedDisplayName(saved.getProperty("name", "Imported audio").toString());
-        requestedWav = saved.getProperty("wav").toString();
+        importGeneration.fetch_add(1); // Cancels previous decoding, not sibling drops.
+        requests.clear();
+        importedNames.fill(juce::String());
         importError.clear();
-        importPending = saved.isValid();
+        int64_t encodedBytes = 0;
+        const auto enqueue = [this, &encodedBytes] (const juce::ValueTree& entry, int index)
+        {
+            if (index < 0 || index >= maximumCustomSources
+                || importedNames[static_cast<size_t>(index)].isNotEmpty())
+                return;
+            const auto name = importedDisplayName(entry.getProperty("name", "Imported audio").toString());
+            const auto wav = entry.getProperty("wav").toString();
+            if (wav.isEmpty())
+                return;
+            if (encodedBytes + wav.length()
+                > (maximumLibraryBytes + maximumCustomSources * 4096) * 4 / 3 + 4)
+            {
+                importError = "The saved custom noise library exceeds the supported audio size.";
+                return;
+            }
+            encodedBytes += wav.length();
+            requests.push_back({ index, juce::File{}, name, wav });
+            importedNames[static_cast<size_t>(index)] = name;
+        };
+        if (saved.hasProperty("wav"))
+            enqueue(saved, 0); // Existing single-import projects.
+        else
+            for (int i = 0; i < saved.getNumChildren(); ++i)
+            {
+                const auto entry = saved.getChild(i);
+                if (entry.hasType("Source"))
+                    enqueue(entry, static_cast<int>(entry.getProperty("index", -1)));
+            }
+        importPending = !requests.empty();
         publishedImported.store(-1);
+        for (auto& identity : publishedIdentities)
+            identity.store(0);
         importedRevision.fetch_add(1);
     }
     importWake.notify_one();
@@ -254,15 +315,18 @@ void BackgroundNoisePlayer::run()
     for (;;)
     {
         std::unique_lock<std::mutex> lock(importMutex);
-        importWake.wait(lock, [this] { return stopping || importPending; });
+        importWake.wait(lock, [this] { return stopping || !requests.empty(); });
         if (stopping)
             return;
         const auto generation = importGeneration.load();
-        const auto file = requestedFile;
-        const auto name = requestedName;
-        const auto encoded = requestedWav;
+        auto request = std::move(requests.front());
+        requests.pop_front();
+        const auto& file = request.file;
+        const auto& name = request.name;
+        const auto& encoded = request.wav;
         lock.unlock();
         std::unique_ptr<Source> source;
+        std::shared_ptr<const Source> preparedSource;
         try
         {
             juce::MemoryBlock savedBytes;
@@ -314,6 +378,14 @@ void BackgroundNoisePlayer::run()
                         source.reset();
                 }
             }
+            if (source != nullptr)
+            {
+                source->identity = nextSourceIdentity++;
+                if (nextSourceIdentity >= std::numeric_limits<uint32_t>::max()
+                    - static_cast<uint32_t>(importedSourceIndex()))
+                    nextSourceIdentity = 1;
+                preparedSource = std::move(source);
+            }
         }
         catch (const std::exception&)
         {
@@ -324,9 +396,24 @@ void BackgroundNoisePlayer::run()
             return;
         if (generation != importGeneration.load())
             continue;
-        if (source != nullptr)
+        bool libraryFull = false;
+        if (preparedSource != nullptr)
         {
-            // At most two slots can be pinned by the single audio reader. The
+            int64_t bytes = static_cast<int64_t>(preparedSource->audio.getNumSamples())
+                * preparedSource->audio.getNumChannels() * sizeof(float);
+            const int current = publishedImported.load();
+            if (current >= 0)
+                for (const auto& existing : importedSlots[static_cast<size_t>(current)].sources)
+                    if (existing != nullptr)
+                        bytes += static_cast<int64_t>(existing->audio.getNumSamples())
+                            * existing->audio.getNumChannels() * sizeof(float);
+            libraryFull = bytes > maximumLibraryBytes;
+            if (libraryFull)
+                preparedSource.reset();
+        }
+        if (preparedSource != nullptr)
+        {
+            // At most two tables can be pinned by the single audio reader. The
             // worker alone replaces sources; UI/state copies use importMutex.
             int destination = -1;
             while (destination < 0 && !stopping && generation == importGeneration.load())
@@ -348,19 +435,28 @@ void BackgroundNoisePlayer::run()
             if (destination < 0)
                 continue;
             auto& slot = importedSlots[static_cast<size_t>(destination)];
-            slot.source = std::move(source); // Destruction is loader-only.
+            const int previous = publishedImported.load();
+            if (previous >= 0)
+                slot.sources = importedSlots[static_cast<size_t>(previous)].sources;
+            else
+                slot.sources.fill(nullptr);
+            slot.sources[static_cast<size_t>(request.index)] = std::move(preparedSource);
+            const auto identity = slot.sources[static_cast<size_t>(request.index)]->identity;
             slot.readers.store(0);
             publishedImported.store(destination);
+            publishedIdentities[static_cast<size_t>(request.index)].store(identity);
             importedRevision.fetch_add(1);
         }
         else
         {
-            importError = "Could not load the noise audio. Choose a supported, readable audio file "
-                          "with no more than 128 MB of decoded mono/stereo audio.";
+            importedNames[static_cast<size_t>(request.index)].clear();
+            importedRevision.fetch_add(1);
+            importError = libraryFull
+                ? "Could not add " + name + ": the custom noise library exceeds 512 MB of decoded audio."
+                : "Could not load " + name + ". Choose a supported, readable audio file "
+                  "with no more than 128 MB of decoded mono/stereo audio.";
         }
-        importPending = false;
-        requestedFile = juce::File{};
-        requestedWav.clear();
+        importPending = !requests.empty();
         lock.unlock();
         importFinished.notify_all();
     }
@@ -426,13 +522,18 @@ BackgroundNoisePlayer::Region BackgroundNoisePlayer::resolveRegion(int samples, 
 
 bool BackgroundNoisePlayer::copyWaveform(int sourceIndex, Waveform& destination) const
 {
-    if (sourceIndex == importedSourceIndex())
+    if (sourceIndex >= importedSourceIndex()
+        && sourceIndex < importedSourceIndex() + maximumCustomSources)
     {
         const std::lock_guard<std::mutex> lock(importMutex);
         const int slot = publishedImported.load();
         if (slot < 0)
             return false;
-        destination = importedSlots[static_cast<size_t>(slot)].source->waveform;
+        const auto& source = importedSlots[static_cast<size_t>(slot)].sources[
+            static_cast<size_t>(sourceIndex - importedSourceIndex())];
+        if (source == nullptr)
+            return false;
+        destination = source->waveform;
         return true;
     }
     if (sourceIndex < 0 || sourceIndex >= static_cast<int>(sources.size()))
@@ -443,15 +544,15 @@ bool BackgroundNoisePlayer::copyWaveform(int sourceIndex, Waveform& destination)
 
 float BackgroundNoisePlayer::getPlayheadPosition(int sourceIndex) const noexcept
 {
-    if (sourceIndex < 0 || sourceIndex > importedSourceIndex())
+    if (sourceIndex < 0 || sourceIndex >= importedSourceIndex() + maximumCustomSources)
         return -1.0f;
-    int sourceKey = sourceIndex;
-    if (sourceIndex == importedSourceIndex())
+    uint32_t sourceKey = static_cast<uint32_t>(sourceIndex);
+    if (sourceIndex >= importedSourceIndex())
     {
-        const int slot = publishedImported.load();
-        if (slot < 0)
+        const auto identity = publishedIdentities[static_cast<size_t>(sourceIndex - importedSourceIndex())].load();
+        if (identity == 0)
             return -1.0f;
-        sourceKey += slot;
+        sourceKey = static_cast<uint32_t>(importedSourceIndex()) + identity;
     }
     const auto snapshot = playheadSnapshot.load(std::memory_order_relaxed);
     if ((snapshot >> 32) != static_cast<uint64_t>(sourceKey) + 1u)
@@ -489,8 +590,8 @@ void BackgroundNoisePlayer::process(juce::AudioBuffer<float>& output,
     // Once reset, the first unpaused render restarts at the final trimmed start.
     const bool trimPaused = (gestureState & 1u) != 0 || trimStopPending;
     const int requestedSource = std::isfinite(sourceIndex)
-        ? static_cast<int>(std::round(juce::jlimit(0.0f, static_cast<float>(importedSourceIndex()), sourceIndex))) : 0;
-    const bool imported = requestedSource == importedSourceIndex();
+        ? static_cast<int>(std::round(juce::jlimit(0.0f, static_cast<float>(importedSourceIndex() + maximumCustomSources - 1), sourceIndex))) : 0;
+    const bool imported = requestedSource >= importedSourceIndex();
     const int requestedSlot = imported ? acquireImported() : -1;
     // This guard releases only an atomic reader pin, never the source itself.
     struct PinRelease
@@ -500,10 +601,11 @@ void BackgroundNoisePlayer::process(juce::AudioBuffer<float>& output,
         ~PinRelease() { owner.releaseImported(slot); }
     } pin { *this, requestedSlot };
     const Source* requestedData = imported
-        ? (requestedSlot >= 0 ? importedSlots[static_cast<size_t>(requestedSlot)].source.get() : nullptr)
+        ? (requestedSlot >= 0 ? importedSlots[static_cast<size_t>(requestedSlot)].sources[
+            static_cast<size_t>(requestedSource - importedSourceIndex())].get() : nullptr)
         : &sources[static_cast<size_t>(requestedSource)];
     // An unsuccessful bounded acquisition should not interrupt an existing loop.
-    if (imported && requestedData == nullptr && publishedImported.load() >= 0)
+    if (imported && requestedSlot < 0 && publishedImported.load() >= 0)
         requestedData = activeSource == requestedSource ? activeData : nullptr;
     const bool sameSource = requestedSource == activeSource && requestedData == activeData;
     const float targetGain = !trimPaused && requestedData != nullptr && std::isfinite(gainDb) && gainDb > PluginParameters::noiseGainDbSilence
@@ -616,7 +718,9 @@ void BackgroundNoisePlayer::process(juce::AudioBuffer<float>& output,
                 position = activeRegion.start + crossfadeFrames;
         }
     }
-    const int sourceKey = activeSource + (activeImportedSlot >= 0 ? activeImportedSlot : 0);
+    const uint32_t sourceKey = activeImportedSlot >= 0
+        ? static_cast<uint32_t>(importedSourceIndex()) + activeData->identity
+        : static_cast<uint32_t>(activeSource);
     const auto normalizedPosition = static_cast<uint32_t>(
         juce::jlimit(0.0, 1.0, position / activeData->audio.getNumSamples())
         * static_cast<double>(std::numeric_limits<uint32_t>::max()));

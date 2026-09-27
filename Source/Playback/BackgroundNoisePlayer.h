@@ -7,6 +7,8 @@
 #include <juce_data_structures/juce_data_structures.h>
 #include <condition_variable>
 #include <mutex>
+#include <deque>
+#include <memory>
 
 // Embedded sources live until teardown. Imported sources use immutable pinned
 // slots; only the loader replaces/frees them. Playback state is audio-only.
@@ -16,15 +18,24 @@ public:
     BackgroundNoisePlayer();
     ~BackgroundNoisePlayer() override;
     static juce::StringArray getSourceNames();
+    static constexpr int maximumCustomSources = 64;
     static int importedSourceIndex() noexcept;
+    juce::StringArray getAvailableSourceNames() const;
     // Non-realtime APIs: import/UI/state only. Save may wait for pending decoding.
     static bool canImportFile(const juce::File&);
-    void importFile(const juce::File&);
+    int importFile(const juce::File&); // Returns reserved source index, or -1.
     void writeImportedState(juce::ValueTree&);
     void restoreImportedState(const juce::ValueTree&);
-    juce::String getImportedName() const;
     juce::String takeImportError();
     uint32_t getImportedRevision() const noexcept { return importedRevision.load(); }
+    uint32_t getSourceRevision(int sourceIndex) const noexcept
+    {
+        if (sourceIndex < importedSourceIndex()
+            || sourceIndex >= importedSourceIndex() + maximumCustomSources)
+            return 0;
+        const int index = sourceIndex - importedSourceIndex();
+        return publishedIdentities[static_cast<size_t>(index)].load();
+    }
 
     struct Waveform
     {
@@ -56,6 +67,7 @@ private:
         double sampleRate = 44100.0;
         Waveform waveform;
         juce::String name, encodedWav;
+        uint32_t identity = 0;
     };
 
     static void prepareWaveform(Source&);
@@ -66,21 +78,32 @@ private:
     struct ImportedSlot
     {
         std::atomic<int> readers { 0 }; // -1 reserves a slot for the loader.
-        std::unique_ptr<Source> source;
+        // Shared ownership is copied/released only by the loader. Audio pins
+        // this entire immutable table and only borrows its source pointers.
+        std::array<std::shared_ptr<const Source>, maximumCustomSources> sources;
     };
     std::array<ImportedSlot, 3> importedSlots;
     std::atomic<int> publishedImported { -1 };
     std::atomic<uint32_t> importGeneration { 0 }, importedRevision { 0 };
+    std::array<std::atomic<uint32_t>, maximumCustomSources> publishedIdentities {};
+    uint32_t nextSourceIdentity = 1; // Loader only.
     mutable std::mutex importMutex; // Never used by render/reset/prepare.
     std::condition_variable importWake, importFinished;
-    juce::File requestedFile;
-    juce::String requestedName, requestedWav, importError;
+    struct ImportRequest
+    {
+        int index = 0;
+        juce::File file;
+        juce::String name, wav;
+    };
+    std::deque<ImportRequest> requests;
+    std::array<juce::String, maximumCustomSources> importedNames;
+    juce::String importError;
     bool importPending = false, stopping = false;
 
     std::vector<Source> sources;
     juce::SmoothedValue<float> gain;
     juce::SmoothedValue<float> regionFade;
-    // One coherent audio-to-UI snapshot: source/slot identity and normalized
+    // One coherent audio-to-UI snapshot: source identity and normalized
     // position. Zero means stopped. No audio buffers are shared with the UI.
     std::atomic<uint64_t> playheadSnapshot { 0 };
     // Odd means dragging; changing the counter also catches gestures completed

@@ -82,9 +82,11 @@ public:
     float getNoisePlayheadPosition(int sourceIndex) const noexcept
     { return backgroundNoise.getPlayheadPosition(sourceIndex); }
     void importNoiseFile(const juce::File&);
-    juce::String getImportedNoiseName() const { return backgroundNoise.getImportedName(); }
+    juce::StringArray getAvailableNoiseNames() const { return backgroundNoise.getAvailableSourceNames(); }
     juce::String takeNoiseImportError() { return backgroundNoise.takeImportError(); }
     uint32_t getNoiseImportRevision() const noexcept { return backgroundNoise.getImportedRevision(); }
+    uint32_t getNoiseSourceRevision(int sourceIndex) const noexcept
+    { return backgroundNoise.getSourceRevision(sourceIndex); }
     void setNoiseTrimActive(bool active) noexcept { backgroundNoise.setTrimActive(active); }
 
     float getSampleSpecificParameterValue(const juce::String& parameterId, float fallbackValue) const;

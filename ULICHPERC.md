@@ -67,11 +67,12 @@ when behavior changes.
 - `Source/Effects/OttProcessor.cpp`: global three-band upward/downward
   compression after Rzhavchina, with a single OTT amount control.
 - `Source/Playback/BackgroundNoisePlayer.cpp`: embedded noise loading and
-  background file import, portable saved audio, pinned source publication,
+  queued custom-noise library imports, portable saved audio, pinned table publication,
   immutable waveform summaries, trimmed looping playback and declick fades,
   mixed after global effects.
 - `Source/UI/NoiseWaveformEditor.cpp`: waveform display and draggable noise
-  start/end handles with host parameter gestures and audio-file drop handling.
+  start/end handles with host parameter gestures. `Source/PluginEditor.cpp`
+  handles editor-wide noise file drops and the noise-panel drag overlay.
 - `Source/Effects/NoiseSidechain.h`: fixed-capacity hit capture, attack/release
   envelopes and bipolar noise pump/follow modulation.
 - `Source/Playback/NoiseTrigger.h`: immutable onset/peak records, original-time

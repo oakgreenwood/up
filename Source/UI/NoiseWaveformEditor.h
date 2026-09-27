@@ -7,7 +7,7 @@
 class AudioPluginAudioProcessor;
 
 class NoiseWaveformEditor final : public juce::Component,
-                                 public juce::FileDragAndDropTarget, private juce::Timer
+                                 private juce::Timer
 {
 public:
     explicit NoiseWaveformEditor(AudioPluginAudioProcessor&);
@@ -18,8 +18,6 @@ public:
     void mouseUp(const juce::MouseEvent&) override;
     void visibilityChanged() override;
     void endDrag();
-    bool isInterestedInFileDrag(const juce::StringArray&) override;
-    void filesDropped(const juce::StringArray&, int, int) override;
 
 private:
     void timerCallback() override;

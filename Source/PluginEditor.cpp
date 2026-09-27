@@ -8,6 +8,7 @@
 namespace
 {
 constexpr int editorPadding = 12;
+constexpr int uploadNoiseItemId = -1; // UI action, outside the positive source IDs.
 
 class NoisePanelSurface final : public juce::Component
 {
@@ -549,13 +550,37 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     noiseSourceSelector.setName("Noise source");
     noiseSourceSelector.setComponentID(PluginUI::noiseSourceSelectorId);
     noiseSourceSelector.setLookAndFeel(customLNF.get());
-    noiseSourceSelector.addItemList(BackgroundNoisePlayer::getSourceNames(), 1);
+    displayedNoiseRevision = processorRef.getNoiseImportRevision();
+    displayedNoiseNames = processorRef.getAvailableNoiseNames();
+    noiseSourceSelector.addItem("Upload file", uploadNoiseItemId);
+    for (int i = 0; i < displayedNoiseNames.size(); ++i)
+        if (displayedNoiseNames[i].isNotEmpty())
+            noiseSourceSelector.addItem(displayedNoiseNames[i], i + 1);
     noiseSourceSelector.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
     noiseSourceSelector.setColour(juce::ComboBox::textColourId, juce::Colours::black);
     noiseSourceSelector.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
     noiseSourceSelector.setColour(juce::ComboBox::arrowColourId, juce::Colours::black);
-    noiseSourceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
-        processorRef.parameters, PluginParameters::noiseSourceId, noiseSourceSelector);
+    // Entries can be sparse while imports load/fail. Use stable item IDs,
+    // rather than ComboBoxAttachment's item-count-based normalization.
+    noiseSourceAttachment = std::make_unique<juce::ParameterAttachment>(
+        *processorRef.parameters.getParameter(PluginParameters::noiseSourceId),
+        [this] (float value)
+        {
+            noiseSourceSelector.setSelectedId(juce::roundToInt(value) + 1, juce::dontSendNotification);
+        });
+    noiseSourceSelector.onChange = [this]
+    {
+        const int id = noiseSourceSelector.getSelectedId();
+        if (id == uploadNoiseItemId)
+        {
+            // Keep the current source selected, including if the picker is cancelled.
+            noiseSourceAttachment->sendInitialUpdate();
+            openNoiseFileChooser();
+        }
+        else if (id > 0)
+            noiseSourceAttachment->setValueAsCompleteGesture(static_cast<float>(id - 1));
+    };
+    noiseSourceAttachment->sendInitialUpdate();
 
     addAndMakeVisible(noiseGainSlider);
     noiseGainSlider.setName("Noise gain");
@@ -830,6 +855,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
+    noiseFileChooser.reset();
     equaliserEditor.endDrag();
     equaliserEditor.onSelected = {};
     stopTimer();
@@ -853,6 +879,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     ottSlider.setLookAndFeel(nullptr);
     noiseModulationSlider.setLookAndFeel(nullptr);
     noiseGainSlider.setLookAndFeel(nullptr);
+    noiseSourceSelector.onChange = {};
     noiseSourceSelector.setLookAndFeel(nullptr);
     noiseTriggerSelector.setLookAndFeel(nullptr);
     noiseReleaseSlider.setLookAndFeel(nullptr);
@@ -1023,6 +1050,86 @@ void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBe
     repaint();
 }
 
+void AudioPluginAudioProcessorEditor::openNoiseFileChooser()
+{
+    // Use the same registered decoders as noise imports, including platform codecs.
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    noiseFileChooser = std::make_unique<juce::FileChooser>(
+        "Upload noise", juce::File(), formats.getWildcardForAllFormats(), true, false, this);
+    noiseFileChooser->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+            | juce::FileBrowserComponent::canSelectMultipleItems,
+        [editor = juce::Component::SafePointer<AudioPluginAudioProcessorEditor>(this)]
+        (const juce::FileChooser& chooser)
+        {
+            if (editor == nullptr)
+                return;
+
+            juce::StringArray paths;
+            for (const auto& file : chooser.getResults())
+                paths.add(file.getFullPathName());
+            if (!paths.isEmpty())
+                editor->filesDropped(paths, 0, 0);
+        });
+}
+
+bool AudioPluginAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files)
+{
+    for (const auto& path : files)
+        if (BackgroundNoisePlayer::canImportFile(juce::File(path)))
+            return true;
+    return false;
+}
+
+void AudioPluginAudioProcessorEditor::fileDragEnter(const juce::StringArray& files, int, int)
+{
+    noiseFileDragActive = isInterestedInFileDrag(files);
+    repaint();
+}
+
+void AudioPluginAudioProcessorEditor::fileDragExit(const juce::StringArray&)
+{
+    noiseFileDragActive = false;
+    repaint();
+}
+
+void AudioPluginAudioProcessorEditor::filesDropped(const juce::StringArray& files, int, int)
+{
+    noiseFileDragActive = false;
+    repaint();
+    if (!isInterestedInFileDrag(files))
+        return;
+
+    noiseWaveform.endDrag();
+    for (const auto& path : files)
+        if (BackgroundNoisePlayer::canImportFile(juce::File(path)))
+            processorRef.importNoiseFile(juce::File(path));
+}
+
+void AudioPluginAudioProcessorEditor::visibilityChanged()
+{
+    if (!isShowing())
+    {
+        noiseFileDragActive = false;
+        repaint();
+    }
+}
+
+void AudioPluginAudioProcessorEditor::paintOverChildren(juce::Graphics& g)
+{
+    if (!noiseFileDragActive || noisePanelSurface == nullptr)
+        return;
+
+    // Paint above every child without introducing another drag target.
+    const auto bounds = noisePanelSurface->getBounds();
+    g.setColour(juce::Colour(0xffa5a4a4));
+    g.fillRect(bounds);
+    g.setColour(juce::Colours::black);
+    g.setFont(juce::Font(juce::FontOptions(28.0f, juce::Font::bold)));
+    g.drawText("Drop noise", bounds, juce::Justification::centred);
+}
+
 void AudioPluginAudioProcessorEditor::mouseDown(const juce::MouseEvent& event)
 {
     if (!event.mods.isLeftButtonDown())
@@ -1100,16 +1207,21 @@ void AudioPluginAudioProcessorEditor::selectSampleGroupForEditing(int groupIndex
 
 void AudioPluginAudioProcessorEditor::timerCallback()
 {
-    const auto importedName = processorRef.getImportedNoiseName();
-    if (importedName != displayedImportedNoiseName)
+    const auto revision = processorRef.getNoiseImportRevision();
+    if (revision != displayedNoiseRevision)
     {
-        displayedImportedNoiseName = importedName;
-        const int itemId = BackgroundNoisePlayer::importedSourceIndex() + 1;
-        const bool selected = noiseSourceSelector.getSelectedId() == itemId;
-        noiseSourceSelector.changeItemText(itemId,
-            importedName.isNotEmpty() ? importedName : "Imported audio");
-        if (selected)
-            noiseSourceSelector.setSelectedId(itemId, juce::dontSendNotification);
+        displayedNoiseRevision = revision;
+        const auto names = processorRef.getAvailableNoiseNames();
+        if (names != displayedNoiseNames)
+        {
+            displayedNoiseNames = names;
+            noiseSourceSelector.clear(juce::dontSendNotification);
+            noiseSourceSelector.addItem("Upload file", uploadNoiseItemId);
+            for (int i = 0; i < names.size(); ++i)
+                if (names[i].isNotEmpty())
+                    noiseSourceSelector.addItem(names[i], i + 1);
+            noiseSourceAttachment->sendInitialUpdate();
+        }
     }
     if (pendingApplyToAllParameter != nullptr)
     {

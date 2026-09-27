@@ -64,6 +64,7 @@ private:
 
 //==============================================================================
 class AudioPluginAudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                              public juce::FileDragAndDropTarget,
                                               private juce::Timer,
                                               private juce::AudioProcessorParameter::Listener
 {
@@ -73,6 +74,12 @@ public:
 
     //==============================================================================
     void paint (juce::Graphics&) override;
+    void paintOverChildren(juce::Graphics&) override;
+    bool isInterestedInFileDrag(const juce::StringArray&) override;
+    void fileDragEnter(const juce::StringArray&, int, int) override;
+    void fileDragExit(const juce::StringArray&) override;
+    void filesDropped(const juce::StringArray&, int, int) override;
+    void visibilityChanged() override;
     void resized() override;
     bool keyPressed(const juce::KeyPress& key) override;
     void mouseDown(const juce::MouseEvent& event) override;
@@ -82,7 +89,8 @@ public:
     ImageKnobSlider sustainSlider;
     ImageKnobSlider ottSlider;
     juce::ComboBox noiseSourceSelector;
-    juce::String displayedImportedNoiseName;
+    juce::StringArray displayedNoiseNames;
+    uint32_t displayedNoiseRevision = 0;
     juce::Slider noiseGainSlider;
     juce::Label noiseLabel;
     juce::Label noiseSourceLabel, noiseTriggerLabel, noiseFollowLabel;
@@ -137,7 +145,7 @@ public:
     // std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sampleRateAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sustainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> ottAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> noiseSourceAttachment;
+    std::unique_ptr<juce::ParameterAttachment> noiseSourceAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> noiseGainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> noiseTriggerAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> noiseModulationAttachment;
@@ -174,6 +182,7 @@ private:
     void selectApplyToAllEffect(juce::RangedAudioParameter& parameter);
     void refreshApplyToAllButton();
     void setSampleEffectsModalVisible(bool shouldBeVisible);
+    void openNoiseFileChooser();
     void parameterValueChanged(int parameterIndex, float newValue) override;
     void parameterGestureChanged(int parameterIndex, bool gestureIsStarting) override;
     float getParameterDefaultValue(const juce::String& parameterId) const;
@@ -189,6 +198,7 @@ private:
     SampleEqualiserEditor equaliserEditor;
     NoiseWaveformEditor noiseWaveform;
     std::unique_ptr<juce::Component> noisePanelSurface;
+    std::unique_ptr<juce::FileChooser> noiseFileChooser;
     juce::TextButton editSamplesButton { "EDIT SAMPLES" };
     std::unique_ptr<CustomLookAndFeel> customLNF;
     std::vector<SampleSpecificSliderBinding> sampleSpecificSliderBindings;
@@ -201,6 +211,7 @@ private:
     std::array<int, AudioPluginAudioProcessor::midiNoteActivityCount> sampleGroupIndexByMidiNote {};
     std::array<uint32_t, AudioPluginAudioProcessor::midiNoteActivityCount> observedMidiNoteActivityGenerations {};
     bool sampleEffectsModalOpen = false;
+    bool noiseFileDragActive = false;
     int displayedSampleGroupIndex = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessorEditor)

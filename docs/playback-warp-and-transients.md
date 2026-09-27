@@ -106,37 +106,54 @@ See [noise state](parameters-and-state.md#background-noise-parameters),
 
 ### Imported noise loading
 
-`BackgroundNoisePlayer` has one persistent JUCE loader thread. Dropping a file
-queues a latest-request-wins job; state restoration uses the same worker with
-embedded WAV data. JUCE basic formats decode WAV, AIFF, FLAC, Ogg/Vorbis and MP3,
-plus available platform codecs. Decoding reads at most 16384 frames per step and
-checks cancellation between steps. Empty/invalid files, rates outside 1..768 kHz,
-and imports exceeding 128 MiB of decoded mono/stereo float audio are rejected.
-Files with more channels use the first two. Peak building, sanitization, portable
-float-WAV encoding, Base64 work and allocations stay on the loader.
+`BackgroundNoisePlayer` has one persistent JUCE loader thread. Drops append to
+a queue and reserve independent custom source indices; they do not cancel or
+replace earlier imports. Up to 64 custom noises are supported. State restoration
+replaces the library and cancels earlier jobs by generation. JUCE basic formats
+decode WAV, AIFF, FLAC, Ogg/Vorbis and MP3, plus platform codecs. Reads/writes
+use at most 16384 frames per step and check cancellation between steps.
 
-Three fixed imported-source slots provide nonblocking publication. Audio makes
-at most two attempts to pin a published slot, and keeps its active slot pinned
-across callbacks and throughout a source-switch fade. A per-call temporary pin
-protects the new candidate. Adoption retains its pin and releases the old one;
-reset/bypass/mute release only scalar pins. The worker reserves an unpublished,
-unpinned slot with CAS before replacing its owning pointer, then publishes the
-fully prepared source. Audio never destroys a source. Consecutive imports and
-restores invalidate older jobs by generation. Only the worker can wait for a
-free slot; rendering never waits or takes the import mutex.
+Empty/invalid files, rates outside 1..768 kHz, files over 128 MiB decoded
+mono/stereo float audio, and a library over 512 MiB decoded audio are rejected.
+The aggregate bound keeps portable Base64 state below integer-sized JUCE/host
+state limits; saved encoded payloads have a corresponding aggregate bound.
+Files with more channels use the first two. Decoding, peak building, sanitization,
+portable float-WAV encoding, Base64 and allocations stay on the loader.
 
-UI waveform/name reads and state serialization share a non-audio mutex with
-publication. The UI owns a summary copy and never retains a replaceable source
-pointer. A revision counter refreshes same-slot replacements, even with identical
-filenames, and ends any trim drag on the replaced source. Teardown cancels and
-joins the worker before destroying slots, with host rendering already stopped.
-The three slots bound retained source history; retired audio is destroyed on
-worker reuse or stopped teardown. Imported playback uses the same gain ramps,
-region fades, loop crossfade and sidechain as bundled noise.
+Three fixed publication slots each hold an immutable 64-entry source table.
+The table owns `shared_ptr<const Source>` entries, copied/released only on the
+loader (or stopped teardown). Appending copies references to previous sources,
+not their audio buffers. Audio never copies or destroys a shared pointer: it
+makes at most two CAS attempts to pin a published table, then borrows a source
+pointer at its stable index. It retains the active table pin through playback
+and the existing source-switch fade; a temporary pin protects the candidate.
+Reset/bypass/mute release only atomic pins. The worker reserves an unpublished,
+unpinned table with CAS, replaces it, and publishes the completed table. At most
+two tables can be pinned by the single audio reader, leaving a third for the
+worker. Only the worker can wait for publication space.
 
-Failed drops keep the previously published imported audio, if any, and report an
-error on the message thread. Since a drop selects the imported slot immediately,
-a first failed import leaves that slot silent; its gain setting is preserved.
+UI names/waveform copies and state serialization use a non-audio mutex shared
+with publication. The UI never owns a replaceable audio pointer. A library
+revision refreshes menu contents, while per-source identity atomics refresh
+only the selected waveform. Loading another entry does not interrupt its trim
+gesture. Playhead snapshots use source identity rather than table-slot identity,
+so appending a table cannot move/hide another source's active playhead. Source
+identities are generated on the worker and runtime-only.
+
+Save waits for all queued/current jobs to finish; all successful sources are
+embedded, even when bundled audio is selected. A failed import releases its
+reserved empty entry and reports an error without changing existing sources.
+If that failed entry is selected, it stays silent until a valid source is chosen
+or imported into the free slot. Batch drops select the last accepted reservation.
+Gain/modulation remain unchanged; each accepted drop resets the shared trim to
+0/1. Previously imported sources remain available from the dropdown.
+
+Retired tables and their last source references are reclaimed on loader reuse
+or stopped teardown. Appends share existing buffers; successive state restores
+may temporarily retain retired libraries in the three bounded table slots.
+Teardown cancels/joins the worker before slot destruction, after rendering stops.
+Imported audio uses the same gain, trim, looping and sidechain path as bundled
+noise. See the [multiple-import audit](realtime-audio-audit-noise-library.md).
 
 ### Noise Pump / Follow
 

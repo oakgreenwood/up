@@ -144,36 +144,43 @@ reading the constructor-cached start/end atomics.
 
 ### Imported noise audio
 
-The source choice appends a permanent `Imported audio` slot after the bundled
-files; existing parameter indices and embedded source indices are unchanged.
-Its dropdown label shows the latest successfully imported filename with square
-brackets and all bracketed text removed. Whitespace is trimmed/collapsed and an
-empty result becomes `Imported audio`. Cleanup applies on import and restore,
-and the cleaned label is saved; the source file on disk is unchanged. Host-facing
-choice text remains `Imported audio`. A new drop replaces this one custom slot,
-selects it, and resets start/end to 0/1 with host parameter gestures; gain and
-Pump/Follow settings stay unchanged. A non-parameter state-change notification
-also marks replacements dirty when the imported choice was already selected.
+The source choice reserves 64 stable custom indices after the bundled files.
+The parameter ID/layout slot and embedded source indices are unchanged. Host
+choice names are `Imported audio 1` through `Imported audio 64`; the editor shows
+only populated/pending entries, with their cleaned filenames. Square brackets
+and their contents are removed and whitespace collapsed; duplicate drop names
+receive numeric suffixes. Each accepted drop reserves a new entry, selects it
+and resets the shared start/end to 0/1 via host gestures. Gain/modulation remain
+unchanged. The non-parameter state-change notification marks each addition dirty.
 
-`noiseUsesImportedSource` preserves custom selection independently of the
-embedded inventory. An `ImportedNoise` child stores the filename and standard
-Base64-encoded 32-bit float PCM WAV, including while a bundled source is selected.
-The WAV contains sanitized decoded audio at its original rate, with at most the
-first two channels. There is no dependency on the original path after loading,
-and no audio quantization during the portable WAV round trip. The payload makes
-saved project/preset state larger. Gain, trim and modulation retain their ordinary
-APVTS serialization.
+The dropdown uses `juce::ParameterAttachment` with stable item IDs instead of
+ComboBoxAttachment's item-count normalization, so pending/failed/empty slots and
+later additions do not shift selection. Source choice automation still uses a
+fixed range; extending the former one-custom-slot range may change pre-existing
+host-owned normalized automation lanes. Saved selections remap by stable index.
 
-Save waits for a pending import to finish on the non-realtime state thread, so
-saving immediately after dropping a file includes it. The loader never calls
-host/UI callbacks or waits for the message thread. Restore queues decoding on
-the loader and cancels earlier work, then removes the large payload from the
-live APVTS tree before `replaceState`. Noise is silent until the restored custom
-source is ready (with a fade-out of an old active source). Missing custom state
-clears the published imported source, including when restoring into a used
-instance. Corrupt/oversized payloads do not publish audio. Reopening the editor
-retains the processor's import; reopening a project/preset restores its embedded
-copy. A fresh unrelated instance starts without imported audio.
+`noiseUsesImportedSource` and `noiseImportedIndex` preserve custom selection
+independently of bundled inventory order. `ImportedNoise` stores one `Source`
+child per successful custom entry, with its index, cleaned name and Base64
+32-bit float PCM WAV. Every imported file is included even when a bundled source
+is selected; original file paths are not needed on reopening. The existing
+single-import `ImportedNoise` name/wav format restores into custom index 0.
+Gain, shared trim and modulation retain normal APVTS serialization.
+
+Limits are 64 entries, 128 MiB decoded mono/stereo audio per file and 512 MiB
+for the current library. Unsupported/oversized files do not replace older audio.
+Sparse indices are preserved; failed reservations are reusable. The decoded and
+encoded-size limits bound the portable payload, which can still make state large.
+
+Save waits for all pending imports on the non-realtime state thread. The loader
+never calls host/UI callbacks or waits for the message thread. Restore cancels
+older work, unpublishes the previous library and queues decoding by stable index.
+It removes the large imported payload from the live APVTS tree before replaceState.
+Old active playback fades out; a restored selected entry plays only when ready.
+Missing custom state clears the library; corrupt entries do not publish audio.
+Closing/reopening the editor retains the processor's library; reopening a saved
+project restores every successfully embedded entry. An unrelated new instance
+starts without custom entries.
 
 ## Program Metadata
 

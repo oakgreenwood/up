@@ -18,6 +18,7 @@ namespace
     const juce::Identifier selectedSampleGroupNoteIndexProperty { "selectedSampleGroupNoteIndex" };
     const juce::Identifier selectedSampleGroupPitchIndexProperty { "selectedSampleGroupPitchIndex" };
     const juce::Identifier noiseSourceNameProperty { "noiseSourceName" };
+    const juce::Identifier noiseImportedIndexProperty { "noiseImportedIndex" };
     const juce::Identifier noiseUsesImportedProperty { "noiseUsesImportedSource" };
     const juce::Identifier noiseTriggerNoteProperty { "noiseTriggerNoteIndex" };
     const juce::Identifier noiseTriggerPitchProperty { "noiseTriggerPitchIndex" };
@@ -511,7 +512,9 @@ void AudioPluginAudioProcessor::changeProgramName(int index, const juce::String&
 void AudioPluginAudioProcessor::importNoiseFile(const juce::File& file)
 {
     // Called by the editor. The worker owns all file access and decoding.
-    backgroundNoise.importFile(file);
+    const int sourceIndex = backgroundNoise.importFile(file);
+    if (sourceIndex < 0)
+        return;
     const auto setValue = [this] (const char* id, float value)
     {
         auto* parameter = parameters.getParameter(id);
@@ -521,7 +524,7 @@ void AudioPluginAudioProcessor::importNoiseFile(const juce::File& file)
     };
     setValue(PluginParameters::noiseStartId, 0.0f);
     setValue(PluginParameters::noiseEndId, 1.0f);
-    setValue(PluginParameters::noiseSourceId, static_cast<float>(BackgroundNoisePlayer::importedSourceIndex()));
+    setValue(PluginParameters::noiseSourceId, static_cast<float>(sourceIndex));
     updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withNonParameterStateChanged(true));
 }
 
@@ -531,11 +534,15 @@ void AudioPluginAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto state = parameters.copyState();
     const auto noiseNames = BackgroundNoisePlayer::getSourceNames();
     const auto noiseState = state.getChildWithProperty("id", PluginParameters::noiseSourceId);
+    const int sourceIndex = juce::jlimit(0, noiseNames.size() - 1,
+        static_cast<int>(noiseState.getProperty("value", 0)));
     state.setProperty(noiseUsesImportedProperty,
-        static_cast<int>(noiseState.getProperty("value", 0)) == BackgroundNoisePlayer::importedSourceIndex(), nullptr);
+        sourceIndex >= BackgroundNoisePlayer::importedSourceIndex(), nullptr);
+    state.setProperty(noiseImportedIndexProperty,
+        sourceIndex - BackgroundNoisePlayer::importedSourceIndex(), nullptr);
     backgroundNoise.writeImportedState(state);
     state.setProperty(noiseSourceNameProperty,
-                      noiseNames[static_cast<int>(noiseState.getProperty("value", 0))], nullptr);
+                      noiseNames[sourceIndex], nullptr);
     const auto triggerState = state.getChildWithProperty("id", PluginParameters::noiseTriggerId);
     const int triggerIndex = static_cast<int>(triggerState.getProperty("value", 0)) - 1;
     const bool validTrigger = triggerIndex >= 0 && triggerIndex < static_cast<int>(noiseTriggerGroups.size());
@@ -601,7 +608,9 @@ void AudioPluginAudioProcessor::setStateInformation(const void* data, int sizeIn
             if (restoredState.hasProperty(noiseSourceNameProperty))
             {
                 const int noiseIndex = static_cast<bool>(restoredState.getProperty(noiseUsesImportedProperty, false))
-                    ? BackgroundNoisePlayer::importedSourceIndex()
+                    ? BackgroundNoisePlayer::importedSourceIndex() + juce::jlimit(0,
+                        BackgroundNoisePlayer::maximumCustomSources - 1,
+                        static_cast<int>(restoredState.getProperty(noiseImportedIndexProperty, 0)))
                     : BackgroundNoisePlayer::getSourceNames().indexOf(
                         restoredState.getProperty(noiseSourceNameProperty).toString());
                 auto sourceState = restoredState.getChildWithProperty("id", PluginParameters::noiseSourceId);
