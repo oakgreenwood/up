@@ -18,11 +18,18 @@ public:
         double activeSourceSampleRate = 48000.0;
         double currentTimeRatio = 1.0;
         bool usingWarpCache = false;
+        int regionStart = 0;
+        int regionEnd = 0;
+        int nextRegionStart = 0;
+        int nextRegionEnd = 0;
+        double attackSeconds = 0.0;
+        double releaseSeconds = 0.0;
     };
 
     struct Result
     {
         bool finished = false;
+        bool wrapped = false;
     };
 
     Result render(juce::AudioBuffer<float>& outputBuffer,

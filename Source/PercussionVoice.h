@@ -1,6 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <utility>
 
 #include "PercussionSound.h"
 #include "Effects/FormantShifter.h"
@@ -46,6 +49,8 @@ public:
     void setHostBpmMovingParam(std::atomic<bool>* p) { hostBpmMovingParam = p; }
     void setSampleSpecificCache(const SampleSpecificRealtimeCache* cache) noexcept { sampleSpecificCache = cache; }
     void setWarpCachePrewarmer(WarpCachePrewarmer* cache) noexcept { warpCachePrewarmer = cache; }
+    void setPlayheadSequenceCounter(std::atomic<uint64_t>* counter) noexcept { playheadSequenceCounter = counter; }
+    uint64_t getPlayheadSnapshot() const noexcept { return playheadSnapshot.load(std::memory_order_relaxed); }
 
     void setSampleSpectrum(SampleSpectrum* spectrum) noexcept { sampleSpectrum = spectrum; }
     void setNoiseSidechain(NoiseSidechain* detector) noexcept { noiseSidechain = detector; }
@@ -56,6 +61,7 @@ private:
     void finishSourcePlayback() noexcept;
     void beginPlayback(float velocity);
     void clearActivePlayback();
+    void publishPlayhead() noexcept;
     void resetWarpFlags();
     void maybeSwitchToReadyWarpCache(double effectiveSamplePitchRatio);
     void maybeSwitchWarpCacheToRealtime(double effectiveSamplePitchRatio);
@@ -83,6 +89,12 @@ private:
     double updateWarpLoopPitchDebounce(int numSamples);
     void resetWarpLoopPitchDebounce(double pitchRatio) noexcept;
     void updateSampleRendererPitchRatio() noexcept;
+    std::pair<int, int> getTrimRegion(int sourceSamples,
+                                      double framesPerOriginalSecond) const noexcept;
+    std::pair<int, int> getTrimRegion(int sourceSamples, double framesPerOriginalSecond,
+                                      float start, float endTrimSeconds) const noexcept;
+    void updateActivePlaybackRegion() noexcept;
+    void updateHeldLoopTrim() noexcept;
     float getSustainAmount() const noexcept;
     float getCurrentSamplePunchAmount() const noexcept;
     float getCurrentSampleGain() const noexcept;
@@ -92,6 +104,7 @@ private:
     float getCurrentFormantRatio() const noexcept;
     double getCurrentSamplePitchRatio() const noexcept;
     double getCurrentHostBpm() const noexcept;
+    bool isTargetTempoMoving() const noexcept;
     double getCurrentOriginalSourceTimeSec() const noexcept;
     bool shouldTimeWarpForCurrentHost() const noexcept;
     bool shouldPreserveLengthForPitch() const noexcept;
@@ -124,7 +137,7 @@ private:
     bool equaliserTailReserved = false;
     int formantTailRemaining = 0;
 
-    // Simple ADSR for amplitude (attack/release from PercussionSound)
+    // Key-release envelope, separate from the source-time edge fades.
     juce::ADSR adsr;
 
     // Pointer to APVTS parameter for sustain shortening
@@ -141,7 +154,16 @@ private:
     std::atomic<bool>* hostBpmMovingParam = nullptr;
     const SampleSpecificRealtimeCache* sampleSpecificCache = nullptr;
     WarpCachePrewarmer* warpCachePrewarmer = nullptr;
+    std::atomic<uint64_t>* playheadSequenceCounter = nullptr;
+    // High 40 bits: note-on order. Next 8: MIDI note + 1. Low 16: trimmed-region progress.
+    std::atomic<uint64_t> playheadSnapshot { 0 };
+    uint64_t playheadSequence = 0;
     double notePitchRatio = 1.0;
+    bool noteTapeMode = false;
+    float noteTrimStart = 0.0f;
+    float noteTrimEndSeconds = 0.0f;
+    float nextLoopTrimStart = 0.0f;
+    float nextLoopTrimEndSeconds = 0.0f;
 
     double appliedWarpLoopPitchRatio = 1.0;
     double pendingWarpLoopPitchRatio = 1.0;

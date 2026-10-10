@@ -5,7 +5,7 @@
 
 namespace PluginParameters
 {
-    const std::array<SampleSpecificParameter, 14> sampleSpecificParameters {{
+    const std::array<SampleSpecificParameter, 20> sampleSpecificParameters {{
         { samplePunchId,
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getPunchAmountForMidiNote(note); },
@@ -39,6 +39,36 @@ namespace PluginParameters
           { return cache.getPanForMidiNote(note); },
           [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
           { cache.setPanForMidiNote(note, value); } },
+        { sampleStartId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getStartForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setStartForMidiNote(note, value); }, nullptr, nullptr, false },
+        { sampleEndId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getEndForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setEndForMidiNote(note, value); }, nullptr, nullptr, false },
+        { sampleAttackMsId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getAttackMsForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setAttackMsForMidiNote(note, value); }, nullptr, nullptr, false },
+        { sampleReleaseMsId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getReleaseMsForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setReleaseMsForMidiNote(note, value); }, nullptr, nullptr, false },
+        { sampleLoopBpmId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getLoopBpmForMidiNote(note); },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setLoopBpmForMidiNote(note, value); }, nullptr, nullptr, false },
+        { sampleLoopTapeModeId,
+          [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
+          { return cache.getLoopTapeModeForMidiNote(note) ? 1.0f : 0.0f; },
+          [] (SampleSpecificRealtimeCache& cache, int note, float value) noexcept
+          { cache.setLoopTapeModeForMidiNote(note, value >= 0.5f); }, nullptr, nullptr, false },
         { sampleEqFrequencyIds[0],
           [] (const SampleSpecificRealtimeCache& cache, int note) noexcept
           { return cache.getEqFrequencyForMidiNote(note, 0); },
@@ -119,7 +149,7 @@ namespace PluginParameters
                        0.0f),
                    std::make_unique<juce::AudioParameterBool>(
                        warpEnabledId,
-                       "Tempo sync",
+                       "Tempo sync (legacy)",
                        true),
                    std::make_unique<juce::AudioParameterFloat>(
                        samplePunchId,
@@ -235,6 +265,24 @@ namespace PluginParameters
             noiseRiseDbId, "Noise rise (legacy)",
             juce::NormalisableRange<float>(0.0f, noiseRiseDbMaximum, 0.1f), noiseRiseDbDefault,
             juce::AudioParameterFloatAttributes().withLabel("dB")));
+        // New sample parameters follow every existing host slot.
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            sampleStartId, "Sample start", juce::NormalisableRange<float>(0.0f, 1.0f), 0.0f));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            sampleEndId, "Sample end", juce::NormalisableRange<float>(0.0f, 1.0f), 1.0f));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            sampleAttackMsId, "Sample attack",
+            juce::NormalisableRange<float>(0.0f, sampleEnvelopeMsMaximum, 1.0f),
+            sampleAttackMsDefault, juce::AudioParameterFloatAttributes().withLabel("ms")));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            sampleReleaseMsId, "Sample release",
+            juce::NormalisableRange<float>(0.0f, sampleEnvelopeMsMaximum, 1.0f),
+            sampleReleaseMsDefault, juce::AudioParameterFloatAttributes().withLabel("ms")));
+        layout.add(std::make_unique<juce::AudioParameterFloat>(
+            sampleLoopBpmId, "Sample target BPM",
+            juce::NormalisableRange<float>(0.0f, 300.0f, 1.0f), 0.0f));
+        layout.add(std::make_unique<juce::AudioParameterBool>(
+            sampleLoopTapeModeId, "Sample speed and pitch", false));
         return layout;
     }
 }

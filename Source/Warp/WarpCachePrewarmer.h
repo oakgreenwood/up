@@ -80,6 +80,8 @@ private:
     static double keyPitch(uint64_t) noexcept;
     static bool neutralKey(uint64_t) noexcept;
     Entry* findEntry(const PercussionSound&) const noexcept;
+    double targetBpm(const Entry&) const noexcept;
+    bool usesTapeMode(const Entry&) const noexcept;
     static bool hasCache(const Entry&, uint64_t) noexcept; // Worker only.
     static void reclaim(Entry&);
     static void unpublish(Entry&) noexcept;

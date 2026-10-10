@@ -1,8 +1,11 @@
 #include "PercussionVoice.h"
 
+#include "Parameters/PluginParameters.h"
 #include "Playback/VelocityLayerGain.h"
 
 #include <cmath>
+
+static_assert(std::atomic<uint64_t>::is_always_lock_free);
 
 namespace
 {
@@ -43,15 +46,18 @@ void PercussionVoice::startNote(int midiNoteNumber,
     juce::ignoreUnused(midiNoteNumber, currentPitchWheelPosition);
 
     currentSound = dynamic_cast<PercussionSound*>(sound);
+    playheadSequence = playheadSequenceCounter != nullptr
+        ? playheadSequenceCounter->fetch_add(1, std::memory_order_relaxed) + 1 : 0;
     beginPlayback(velocity);
+    publishPlayhead();
 }
 
 void PercussionVoice::stopNote(float /*velocity*/, bool allowTailOff)
 {
     if (allowTailOff)
     {
-        // Only warp-enabled samples are key-held; non-warp samples play as one-shots.
-        if (metadata == nullptr || !metadata->warp)
+        // Loops and warp-enabled samples are key-held; ordinary hits play as one-shots.
+        if (metadata == nullptr || (!metadata->warp && !metadata->loop))
             return;
 
         adsr.noteOff();
@@ -152,6 +158,7 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
 
 void PercussionVoice::finishSourcePlayback() noexcept
 {
+    playheadSnapshot.store(0, std::memory_order_relaxed);
     sourceFinished = true;
     equaliserTailReserved = equaliser.hasTail();
     formantTailRemaining = formantDrainSamples + (equaliserTailReserved
@@ -166,7 +173,50 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
         return;
 
     if (activeBuffer == nullptr)
+    {
         activeBuffer = &currentSound->getAudioData();
+        updateActivePlaybackRegion();
+    }
+
+    if (currentSound->isWarpEnabled() && sampleSpecificCache != nullptr)
+    {
+        const bool tapeModeNow = sampleSpecificCache->getLoopTapeModeForMidiNote(
+            currentSound->getMidiRootNote());
+        if (tapeModeNow != noteTapeMode)
+        {
+            const double sourceTime = getCurrentOriginalSourceTimeSec();
+            const double playbackRate = juce::jmax(1.0, getSampleRate());
+            if (tapeModeNow)
+            {
+                if (switchToOriginalPlaybackFromSourceTime(sourceTime, playbackRate, true))
+                    noteTapeMode = true;
+            }
+            else
+            {
+                noteTapeMode = false;
+                const double pitch = getCurrentSamplePitchRatio();
+                const bool needsPitchWarp = !isNeutralPitchRatio(pitch);
+                if (shouldTimeWarpForCurrentHost() || needsPitchWarp)
+                {
+                    const double targetBpm = getCurrentHostBpm();
+                    if (!tryUseWarpCache(targetBpm, needsPitchWarp ? pitch : 1.0,
+                                         sourceTime, true, true))
+                    {
+                        const auto& original = currentSound->getAudioData();
+                        const double sourceRate = juce::jmax(1.0, currentSound->getSourceSampleRate());
+                        const double lastFrame = juce::jmax(0, original.getNumSamples() - 1);
+                        const double sourceFrame = std::isfinite(sourceTime)
+                            ? juce::jlimit(0.0, lastFrame, sourceTime * sourceRate) : 0.0;
+                        const int frame = static_cast<int>(std::floor(sourceFrame));
+                        switchToRealtimeWarpFromOriginal(frame, sourceTime,
+                            currentSound->warpTimeRatioForTarget(targetBpm),
+                            sourceRate, playbackRate, juce::jlimit(1, 2, original.getNumChannels()),
+                            pitch, true);
+                    }
+                }
+            }
+        }
+    }
 
     double effectiveSamplePitchRatio = notePitchRatio;
     if (!currentSound->isOneShot())
@@ -188,6 +238,9 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
         return;
     }
 
+    if (loopWhileHeld)
+        updateHeldLoopTrim();
+
     sampleGain.setTargetValue(getCurrentSampleGain());
     const float sustainAmount = getSustainAmount();
     const float punchAmount = getCurrentSamplePunchAmount();
@@ -196,7 +249,7 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
 
     if (isRealtimeWarping && realtimeWarpPlayer.isReady() && hostBpmParam != nullptr)
     {
-        const double hostBpm = juce::jmax(1.0, hostBpmParam->load(std::memory_order_relaxed));
+        const double hostBpm = getCurrentHostBpm();
         const auto result = realtimeWarpPlayer.render(outputBuffer,
                                                       startSample,
                                                       numSamples,
@@ -207,6 +260,8 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
                                                       hostBpm,
                                                       loopWhileHeld,
                                                       adsr,
+                                                      playbackState.attackSeconds,
+                                                      playbackState.releaseSeconds,
                                                       velocityGain,
                                                       sampleGain,
                                                       punchAmount,
@@ -220,6 +275,17 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
 
         if (result.finished)
             finishSourcePlayback();
+        else
+        {
+            if (result.wrapped)
+            {
+                noteTrimStart = nextLoopTrimStart;
+                noteTrimEndSeconds = nextLoopTrimEndSeconds;
+                playbackState.regionStart = playbackState.nextRegionStart;
+                playbackState.regionEnd = playbackState.nextRegionEnd;
+            }
+            publishPlayhead();
+        }
 
         return;
     }
@@ -246,6 +312,45 @@ void PercussionVoice::renderSourceBlock(juce::AudioBuffer<float>& outputBuffer,
 
     if (result.finished)
         finishSourcePlayback();
+    else
+    {
+        if (result.wrapped)
+        {
+            noteTrimStart = nextLoopTrimStart;
+            noteTrimEndSeconds = nextLoopTrimEndSeconds;
+        }
+        publishPlayhead();
+    }
+}
+
+void PercussionVoice::publishPlayhead() noexcept
+{
+    if (currentSound == nullptr || sourceFinished || playheadSequence == 0)
+        return;
+
+    const auto& source = currentSound->getAudioData();
+    const double sourceRate = currentSound->getSourceSampleRate();
+    const double sourceTime = getCurrentOriginalSourceTimeSec();
+    if (source.getNumSamples() <= 0 || !std::isfinite(sourceRate) || sourceRate <= 0.0
+        || !std::isfinite(sourceTime))
+    {
+        playheadSnapshot.store(0, std::memory_order_relaxed);
+        return;
+    }
+
+    const auto [first, last] = getTrimRegion(source.getNumSamples(), sourceRate);
+    const double sourceFrame = sourceTime * sourceRate;
+    if (last <= first || !std::isfinite(sourceFrame))
+    {
+        playheadSnapshot.store(0, std::memory_order_relaxed);
+        return;
+    }
+    const auto progress = static_cast<uint64_t>(std::round(juce::jlimit(0.0, 1.0,
+        (sourceFrame - first) / (last - first)) * 65534.0));
+    const auto note = static_cast<uint64_t>(currentSound->getMidiRootNote() + 1);
+    const uint64_t snapshot = ((playheadSequence & 0xffffffffffULL) << 24)
+                            | ((note & 0xffULL) << 16) | progress;
+    playheadSnapshot.store(snapshot, std::memory_order_relaxed);
 }
 
 void PercussionVoice::beginPlayback(float velocity)
@@ -305,17 +410,38 @@ void PercussionVoice::beginPlayback(float velocity)
 
     notePitchRatio = sampleSpecificCache != nullptr
         ? sampleSpecificCache->getPitchRatioForMidiNote(currentSound->getMidiRootNote()) : 1.0;
+    noteTapeMode = currentSound->isWarpEnabled() && sampleSpecificCache != nullptr
+        && sampleSpecificCache->getLoopTapeModeForMidiNote(currentSound->getMidiRootNote());
+    noteTrimStart = sampleSpecificCache != nullptr
+        ? sampleSpecificCache->getStartForMidiNote(currentSound->getMidiRootNote()) : 0.0f;
+    noteTrimEndSeconds = sampleSpecificCache != nullptr
+        ? sampleSpecificCache->getEndTrimSecondsForMidiNote(currentSound->getMidiRootNote()) : 0.0f;
+    nextLoopTrimStart = noteTrimStart;
+    nextLoopTrimEndSeconds = noteTrimEndSeconds;
     const double samplePitchRatio = notePitchRatio;
     resetWarpLoopPitchDebounce(samplePitchRatio);
 
     activeBuffer = &currentSound->getAudioData();
     playbackState.activeSourceSampleRate = sourceSampleRate;
-    playbackState.sourceSamplePosition = 0.0;
+    updateActivePlaybackRegion();
+    playbackState.sourceSamplePosition = playbackState.regionStart;
     playbackState.pitchRatio = playbackState.activeSourceSampleRate / playbackSampleRate;
     playbackState.currentTimeRatio = 1.0;
     playbackState.usingWarpCache = false;
 
+    const int midiNote = currentSound->getMidiRootNote();
+    const float attackMs = sampleSpecificCache != nullptr
+        ? sampleSpecificCache->getAttackMsForMidiNote(midiNote)
+        : PluginParameters::sampleAttackMsDefault;
+    const float releaseMs = sampleSpecificCache != nullptr
+        ? sampleSpecificCache->getReleaseMsForMidiNote(midiNote)
+        : PluginParameters::sampleReleaseMsDefault;
+    adsr.reset();
     adsr.setSampleRate(playbackSampleRate);
+    playbackState.attackSeconds = attackMs * 0.001;
+    playbackState.releaseSeconds = releaseMs * 0.001;
+    // Source-time fades follow trim boundaries; ADSR handles key release.
+    adsr.setParameters({ 0.0f, 0.0f, 1.0f, releaseMs * 0.001f });
     adsr.noteOn();
 
     if (currentSound->isOneShot())
@@ -324,15 +450,17 @@ void PercussionVoice::beginPlayback(float velocity)
         return;
     }
 
+    if (noteTapeMode)
+    {
+        updateSampleRendererPitchRatio();
+        return;
+    }
+
     const bool warpToggle = (warpEnabledParam != nullptr)
                          && warpEnabledParam->load(std::memory_order_relaxed);
-    const bool bpmIsMoving = (hostBpmMovingParam != nullptr)
-                          && hostBpmMovingParam->load(std::memory_order_relaxed);
-    const double hostBpm = (hostBpmParam != nullptr)
-                             ? juce::jmax(1.0, hostBpmParam->load(std::memory_order_relaxed))
-                             : 0.0;
-    const double warpBaseBpm = PercussionSound::warpBaseBpmForHost(currentSound->getOriginalBpm(),
-                                                                   hostBpm);
+    const bool bpmIsMoving = isTargetTempoMoving();
+    const double hostBpm = getCurrentHostBpm();
+    const double warpBaseBpm = currentSound->warpBaseBpmForTarget(hostBpm);
     const double bpmDiff = std::abs(hostBpm - warpBaseBpm);
     const bool nearOriginalBpm = (hostBpmParam != nullptr && bpmDiff < 0.1);
     const bool shouldTimeWarp = currentSound->isWarpEnabled()
@@ -358,7 +486,7 @@ void PercussionVoice::beginPlayback(float velocity)
     {
         if (!tryUseWarpCache(hostBpm,
                              offlineWarpCachePitchRatio,
-                             0.0,
+                             playbackState.sourceSamplePosition / sourceSampleRate,
                              true,
                              false))
         {
@@ -373,14 +501,13 @@ void PercussionVoice::beginPlayback(float velocity)
     if (isRealtimeWarping && activeBuffer != nullptr)
     {
         const int channels = juce::jlimit(1, 2, activeBuffer->getNumChannels());
-        const double hostBpmAtNoteStart = (hostBpmParam != nullptr)
-                                            ? juce::jmax(1.0, hostBpmParam->load(std::memory_order_relaxed))
-                                            : currentSound->getOriginalBpm();
-        playbackState.currentTimeRatio = PercussionSound::warpTimeRatioForHost(currentSound->getOriginalBpm(),
-                                                                                hostBpmAtNoteStart);
+        const double hostBpmAtNoteStart = getCurrentHostBpm();
+        playbackState.currentTimeRatio = currentSound->warpTimeRatioForTarget(hostBpmAtNoteStart);
 
-        if (!realtimeWarpPlayer.start(0,
-                                      0.0,
+        if (!realtimeWarpPlayer.start(playbackState.regionStart,
+                                      playbackState.sourceSamplePosition / sourceSampleRate,
+                                      playbackState.regionStart,
+                                      playbackState.regionEnd,
                                       playbackState.currentTimeRatio,
                                       playbackState.activeSourceSampleRate,
                                       playbackSampleRate,
@@ -392,6 +519,8 @@ void PercussionVoice::beginPlayback(float velocity)
 
 void PercussionVoice::clearActivePlayback()
 {
+    playheadSnapshot.store(0, std::memory_order_relaxed);
+    playheadSequence = 0;
     sourceFinished = false;
     equaliserTailReserved = false;
     formantTailRemaining = 0;
@@ -408,6 +537,11 @@ void PercussionVoice::clearActivePlayback()
     sustainShaper.setMetadata(nullptr);
     noteStartDeclicker.reset();
     notePitchRatio = 1.0;
+    noteTapeMode = false;
+    noteTrimStart = 0.0f;
+    noteTrimEndSeconds = 0.0f;
+    nextLoopTrimStart = 0.0f;
+    nextLoopTrimEndSeconds = 0.0f;
     resetWarpLoopPitchDebounce(1.0);
     resetWarpFlags();
 }
@@ -429,8 +563,7 @@ void PercussionVoice::maybeSwitchToReadyWarpCache(double effectiveSamplePitchRat
         return;
     }
 
-    const bool hostBpmIsMoving = (hostBpmMovingParam != nullptr)
-                              && hostBpmMovingParam->load(std::memory_order_relaxed);
+    const bool hostBpmIsMoving = isTargetTempoMoving();
     if (hostBpmIsMoving)
         return;
 
@@ -466,16 +599,12 @@ void PercussionVoice::maybeSwitchToReadyWarpCache(double effectiveSamplePitchRat
 
 void PercussionVoice::maybeSwitchWarpCacheToRealtime(double effectiveSamplePitchRatio)
 {
-    const bool hostBpmIsMoving = (hostBpmMovingParam != nullptr)
-                              && hostBpmMovingParam->load(std::memory_order_relaxed);
-    const double hostBpmNow = (hostBpmParam != nullptr)
-                                ? juce::jmax(1.0, hostBpmParam->load(std::memory_order_relaxed))
-                                : 0.0;
+    const double hostBpmNow = getCurrentHostBpm();
     const double quantizedHostBpm = PercussionSound::quantizeWarpBpm(hostBpmNow);
     const bool cacheBpmMismatch = (activeWarpCache == nullptr)
                                || (std::abs(activeWarpCache->bpm - quantizedHostBpm) > 0.005);
 
-    if (!playbackState.usingWarpCache || isRealtimeWarping || !hostBpmIsMoving || !cacheBpmMismatch)
+    if (!playbackState.usingWarpCache || isRealtimeWarping || !cacheBpmMismatch)
         return;
 
     const double cacheRatio = (activeWarpCache != nullptr)
@@ -496,7 +625,7 @@ void PercussionVoice::maybeSwitchWarpCacheToRealtime(double effectiveSamplePitch
                                                (int) std::floor(sourceTimeSec * sourceSampleRate));
     const double playbackSampleRate = juce::jmax(1.0, getSampleRate());
     const int channels = juce::jlimit(1, 2, originalData.getNumChannels());
-    const double timeRatio = PercussionSound::warpTimeRatioForHost(currentSound->getOriginalBpm(), hostBpmNow);
+    const double timeRatio = currentSound->warpTimeRatioForTarget(hostBpmNow);
 
     switchToRealtimeWarpFromOriginal(startSourceSample,
                                      sourceTimeSec,
@@ -544,7 +673,7 @@ void PercussionVoice::maybeSwitchLengthPreservedPitchToRealtime(double effective
 
     const double hostBpmNow = getCurrentHostBpm();
     const double playbackSampleRate = juce::jmax(1.0, getSampleRate());
-    const double timeRatio = PercussionSound::warpTimeRatioForHost(currentSound->getOriginalBpm(), hostBpmNow);
+    const double timeRatio = currentSound->warpTimeRatioForTarget(hostBpmNow);
 
     if (playbackState.usingWarpCache)
     {
@@ -622,14 +751,15 @@ bool PercussionVoice::switchToWarpCache(WarpCachePrewarmer::Lease cache,
 
     activeWarpCache = std::move(cache);
     activeBuffer = &activeWarpCache->buffer;
+    updateActivePlaybackRegion();
 
     const double cacheSampleRate = juce::jmax(1.0, activeWarpCache->sourceSampleRate);
     const double cacheTimeSec = juce::jmax(0.0, sourceTimeSec)
                               * juce::jmax(1e-9, activeWarpCache->timeRatio);
-    const double maxPosition = juce::jmax(0, activeWarpCache->buffer.getNumSamples() - 1);
+    const double maxPosition = playbackState.regionEnd - 1;
 
     playbackState.activeSourceSampleRate = cacheSampleRate;
-    playbackState.sourceSamplePosition = juce::jlimit(0.0,
+    playbackState.sourceSamplePosition = juce::jlimit((double) playbackState.regionStart,
                                                       maxPosition,
                                                       cacheTimeSec * cacheSampleRate);
     playbackState.pitchRatio = playbackState.activeSourceSampleRate / juce::jmax(1.0, playbackSampleRate);
@@ -650,7 +780,7 @@ bool PercussionVoice::switchToOriginalPlaybackFromSourceTime(double sourceTimeSe
                                                              double playbackSampleRate,
                                                              bool triggerDeclick)
 {
-    if (currentSound == nullptr)
+    if (currentSound == nullptr || !std::isfinite(sourceTimeSec))
         return false;
 
     const auto& originalData = currentSound->getAudioData();
@@ -658,14 +788,14 @@ bool PercussionVoice::switchToOriginalPlaybackFromSourceTime(double sourceTimeSe
         return false;
 
     const double sourceSampleRate = juce::jmax(1.0, currentSound->getSourceSampleRate());
-    const double maxPosition = juce::jmax(0, originalData.getNumSamples() - 1);
-
     activeWarpCache.reset();
     activeBuffer = &originalData;
+    updateActivePlaybackRegion();
+    const double maxPosition = playbackState.regionEnd - 1;
     // RealtimeWarpPlayer::start() resets the engine before its next use.
 
     playbackState.activeSourceSampleRate = sourceSampleRate;
-    playbackState.sourceSamplePosition = juce::jlimit(0.0,
+    playbackState.sourceSamplePosition = juce::jlimit((double) playbackState.regionStart,
                                                       maxPosition,
                                                       juce::jmax(0.0, sourceTimeSec) * sourceSampleRate);
     playbackState.pitchRatio = playbackState.activeSourceSampleRate / juce::jmax(1.0, playbackSampleRate);
@@ -689,12 +819,21 @@ bool PercussionVoice::switchToRealtimeWarpFromOriginal(int startSourceSample,
                                                        double samplePitchRatio,
                                                        bool triggerDeclick)
 {
-    if (currentSound == nullptr)
+    if (currentSound == nullptr || !std::isfinite(sourceSampleRate)
+        || sourceSampleRate <= 0.0 || !std::isfinite(sourceTimeSec))
         return false;
 
     const auto& originalData = currentSound->getAudioData();
+    const auto [regionStart, regionEnd] = getTrimRegion(originalData.getNumSamples(), sourceSampleRate);
+    if (regionEnd <= regionStart)
+        return false;
+    startSourceSample = juce::jlimit(regionStart, regionEnd - 1, startSourceSample);
+    sourceTimeSec = juce::jlimit(regionStart / sourceSampleRate,
+                                 (regionEnd - 1) / sourceSampleRate, sourceTimeSec);
     if (!realtimeWarpPlayer.start(startSourceSample,
                                   sourceTimeSec,
+                                  regionStart,
+                                  regionEnd,
                                   timeRatio,
                                   sourceSampleRate,
                                   playbackSampleRate,
@@ -706,6 +845,7 @@ bool PercussionVoice::switchToRealtimeWarpFromOriginal(int startSourceSample,
 
     activeWarpCache.reset();
     activeBuffer = &originalData;
+    updateActivePlaybackRegion();
     playbackState.activeSourceSampleRate = sourceSampleRate;
     playbackState.sourceSamplePosition = static_cast<double>(startSourceSample);
     playbackState.pitchRatio = playbackState.activeSourceSampleRate / playbackSampleRate;
@@ -833,7 +973,92 @@ void PercussionVoice::updateSampleRendererPitchRatio() noexcept
     if (!shouldPreserveLengthForPitch())
         pitchRatio = getCurrentSamplePitchRatio();
 
+    if (noteTapeMode && currentSound != nullptr)
+        pitchRatio *= getCurrentHostBpm() / juce::jmax(1.0, currentSound->getOriginalBpm());
+
     playbackState.pitchRatio = (playbackState.activeSourceSampleRate / playbackSampleRate) * pitchRatio;
+}
+
+std::pair<int, int> PercussionVoice::getTrimRegion(int sourceSamples,
+                                                   double framesPerOriginalSecond) const noexcept
+{
+    return getTrimRegion(sourceSamples, framesPerOriginalSecond,
+                         noteTrimStart, noteTrimEndSeconds);
+}
+
+std::pair<int, int> PercussionVoice::getTrimRegion(int sourceSamples,
+                                                   double framesPerOriginalSecond,
+                                                   float trimStart,
+                                                   float endTrimSeconds) const noexcept
+{
+    if (sourceSamples <= 0)
+        return { 0, 0 };
+
+    const double start = std::isfinite(trimStart) ? juce::jlimit(0.0, 1.0,
+        static_cast<double>(trimStart)) : 0.0;
+    const int first = static_cast<int>(juce::jlimit(0.0,
+        static_cast<double>(sourceSamples - 1), std::floor(start * sourceSamples)));
+    const double seconds = std::isfinite(endTrimSeconds)
+        ? juce::jmax(0.0, static_cast<double>(endTrimSeconds)) : 0.0;
+    const double rate = std::isfinite(framesPerOriginalSecond)
+        ? juce::jmax(1.0, framesPerOriginalSecond) : 1.0;
+    const double removedFrames = seconds * rate;
+    const int removed = static_cast<int>(std::isfinite(removedFrames)
+        ? juce::jlimit(0.0, static_cast<double>(sourceSamples), std::ceil(removedFrames))
+        : static_cast<double>(sourceSamples));
+    const int last = juce::jmax(first + 1, sourceSamples - removed);
+    return { first, last };
+}
+
+void PercussionVoice::updateActivePlaybackRegion() noexcept
+{
+    double framesPerOriginalSecond = currentSound != nullptr
+        ? currentSound->getSourceSampleRate() : 1.0;
+    if (activeWarpCache != nullptr && activeBuffer == &activeWarpCache->buffer)
+        framesPerOriginalSecond = activeWarpCache->sourceSampleRate * activeWarpCache->timeRatio;
+    const auto [start, end] = getTrimRegion(activeBuffer != nullptr
+        ? activeBuffer->getNumSamples() : 0, framesPerOriginalSecond);
+    playbackState.regionStart = start;
+    playbackState.regionEnd = end;
+    playbackState.nextRegionStart = start;
+    playbackState.nextRegionEnd = end;
+}
+
+void PercussionVoice::updateHeldLoopTrim() noexcept
+{
+    if (currentSound == nullptr || activeBuffer == nullptr || sampleSpecificCache == nullptr)
+        return;
+
+    const int note = currentSound->getMidiRootNote();
+    nextLoopTrimStart = sampleSpecificCache->getStartForMidiNote(note);
+    nextLoopTrimEndSeconds = sampleSpecificCache->getEndTrimSecondsForMidiNote(note);
+
+    const double originalFramesPerSecond = activeWarpCache != nullptr
+        && activeBuffer == &activeWarpCache->buffer
+        ? activeWarpCache->sourceSampleRate * activeWarpCache->timeRatio
+        : currentSound->getSourceSampleRate();
+    const int sourceSamples = activeBuffer->getNumSamples();
+    const auto [nextStart, nextEnd] = getTrimRegion(sourceSamples, originalFramesPerSecond,
+                                                    nextLoopTrimStart, nextLoopTrimEndSeconds);
+    playbackState.nextRegionStart = nextStart;
+    playbackState.nextRegionEnd = nextEnd;
+
+    // Keep the start of this pass. Move its end only while the new boundary is
+    // still ahead of audible playback; otherwise adopt it at the next wrap.
+    const int currentEnd = getTrimRegion(sourceSamples, originalFramesPerSecond,
+                                         noteTrimStart, nextLoopTrimEndSeconds).second;
+    const double position = isRealtimeWarping
+        ? juce::jmax(realtimeWarpPlayer.getCurrentSourceTimeSec() * originalFramesPerSecond,
+                     static_cast<double>(realtimeWarpPlayer.getFedSourceFrame()))
+        : playbackState.sourceSamplePosition;
+    if (currentEnd > position)
+    {
+        playbackState.regionEnd = currentEnd;
+        noteTrimEndSeconds = nextLoopTrimEndSeconds;
+    }
+
+    if (isRealtimeWarping)
+        realtimeWarpPlayer.setLoopTrim(nextStart, nextEnd, playbackState.regionEnd);
 }
 
 double PercussionVoice::getCurrentSamplePitchRatio() const noexcept
@@ -849,10 +1074,27 @@ double PercussionVoice::getCurrentSamplePitchRatio() const noexcept
 
 double PercussionVoice::getCurrentHostBpm() const noexcept
 {
+    if (currentSound != nullptr && currentSound->isWarpEnabled()
+        && sampleSpecificCache != nullptr)
+    {
+        const float target = sampleSpecificCache->getLoopBpmForMidiNote(currentSound->getMidiRootNote());
+        if (target >= 1.0f)
+            return target;
+    }
     if (hostBpmParam != nullptr)
         return juce::jmax(1.0, hostBpmParam->load(std::memory_order_relaxed));
 
     return (currentSound != nullptr) ? currentSound->getOriginalBpm() : 1.0;
+}
+
+bool PercussionVoice::isTargetTempoMoving() const noexcept
+{
+    if (currentSound != nullptr && currentSound->isWarpEnabled()
+        && sampleSpecificCache != nullptr
+        && sampleSpecificCache->getLoopBpmForMidiNote(currentSound->getMidiRootNote()) >= 1.0f)
+        return false;
+    return hostBpmMovingParam != nullptr
+        && hostBpmMovingParam->load(std::memory_order_relaxed);
 }
 
 double PercussionVoice::getCurrentOriginalSourceTimeSec() const noexcept
@@ -875,6 +1117,7 @@ double PercussionVoice::getCurrentOriginalSourceTimeSec() const noexcept
 bool PercussionVoice::shouldTimeWarpForCurrentHost() const noexcept
 {
     if (currentSound == nullptr
+        || noteTapeMode
         || !currentSound->isWarpEnabled()
         || hostBpmParam == nullptr
         || warpEnabledParam == nullptr
@@ -884,14 +1127,14 @@ bool PercussionVoice::shouldTimeWarpForCurrentHost() const noexcept
     }
 
     const double hostBpm = getCurrentHostBpm();
-    const double warpBaseBpm = PercussionSound::warpBaseBpmForHost(currentSound->getOriginalBpm(),
-                                                                   hostBpm);
+    const double warpBaseBpm = currentSound->warpBaseBpmForTarget(hostBpm);
     return std::abs(hostBpm - warpBaseBpm) >= 0.1;
 }
 
 bool PercussionVoice::shouldPreserveLengthForPitch() const noexcept
 {
     return currentSound != nullptr
+        && !noteTapeMode
         && currentSound->isWarpEnabled()
         && hostBpmParam != nullptr
         && warpEnabledParam != nullptr

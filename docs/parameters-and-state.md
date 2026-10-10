@@ -14,7 +14,7 @@ APVTS parameters are serialized with `parameters.copyState()` and restored with
 | --- | --- | --- | ---: | --- |
 | `rzhavchina` | `Rzhavchina` | float `0..1` | `0` | Bit depth and sample-rate reduction in `processBlock` |
 | `sustainShorten` | `Pomyatost` | float `0..1` | `0` | Sustain/tail shortening in voices |
-| `warpEnabled` | `Tempo sync` | bool | `true` | Enables tempo-sync warp behavior |
+| `warpEnabled` | `Tempo sync (legacy)` | bool | `true` | Inert legacy host slot; warp timing is controlled per group |
 | `samplePunch` | `Punch` | float `0..1`, `0.01` step | `0` | Sample-specific transient volume boost; editor displays `0%..100%` |
 | `samplePitchSemitones` | `Pitch` | float `-12..12` semitones, `0.1` step | `0` | Sample-specific pitch offset for the selected sample group |
 | `samplePitchPreserveLength` | `Pitch keep length` | bool | `false` | Inert legacy host parameter; no playback effect |
@@ -23,6 +23,10 @@ APVTS parameters are serialized with `parameters.copyState()` and restored with
 | `sampleFormant3Semitones` | `Formant` | float `-12..12` semitones, `0.1` step | `0` | Additional formant shift using pitch-synchronous grains |
 | `sampleMonoAmount` | `Mono` | float `0..1`, `0.01` step | `0` | Sample-specific stereo-to-mono blend after Formant; editor displays `0%..100%` |
 | `samplePan` | `Panorama` | float `-50..50`, `1` step | `0` | Sample-specific stereo positioning after Mono; editor displays `50L..C..50R` |
+| `sampleAttackMs` | `Sample attack` | float `0..2000` ms, `1` step | `0` | Per-group voice attack |
+| `sampleReleaseMs` | `Sample release` | float `0..2000` ms, `1` step | `60` | Per-group source-end fade and key-held note-off release |
+| `sampleLoopBpm` | `Sample target BPM` | float `0..300` BPM, `1` step | `0` | Per-group target for warp-enabled samples; zero follows project BPM |
+| `sampleLoopTapeMode` | `Sample speed and pitch` | bool | `false` | Per-group direct playback when true; Rubber Band preserves pitch when false |
 | `ottAmount` | `OTT` | float `0..1`, `0.01` step | `0` | Global three-band upward/downward compression depth after Rzhavchina |
 
 OTT is appended after Panorama, preserving existing host parameter indices. It
@@ -44,8 +48,8 @@ index: `sampleEqLowFrequency`, `sampleEqLowGain`, `sampleEqBell1Frequency`,
 are 100/500/2500/10000 Hz and every gain defaults to zero. Q is a fixed DSP
 constant, 1.0, rather than a parameter.
 
-The 14-entry sample-specific registry includes these eight values alongside
-Gain, Punch, Pitch, Formant, Mono and Panorama. The fixed realtime cache stores
+The 20-entry sample-specific registry includes these eight values alongside
+Gain, Punch, Pitch, Formant, Mono, Panorama, trim and envelope values. The fixed realtime cache stores
 four frequency and four gain atomic arrays indexed by MIDI root note; writes
 reject non-finite input, clamp frequencies/gains and snap gains to 0.1 dB.
 Selection, host automation with the editor closed, cache mirroring on save and
@@ -204,7 +208,8 @@ Its `ValueTree`, `CriticalSection`, string IDs, and linear scans belong only to
 UI edits and state save/restore; never read it from audio.
 
 For `samplePitchSemitones`, `samplePunch`, `sampleGainDb`,
-`sampleFormant3Semitones`, `sampleMonoAmount`, `samplePan`, and the eight EQ parameters:
+`sampleFormant3Semitones`, `sampleMonoAmount`, `samplePan`, `sampleStart`,
+`sampleEnd`, `sampleAttackMs`, `sampleReleaseMs`, and the eight EQ parameters:
 
 - Processor helpers read/write the selected group's stored values.
 - APVTS slider/button attachments report gestures/changes for host automation
@@ -216,7 +221,8 @@ For `samplePitchSemitones`, `samplePunch`, `sampleGainDb`,
   loaded group's MIDI note. It stores pitch semitones, the precomputed pitch
   ratio, Punch, Gain in dB with a precomputed linear multiplier, and
   Formant semitones with a precomputed frequency ratio, plus Mono amount and
-  Panorama position, plus the four EQ frequencies/gains. Voices avoid state-tree access and
+  Panorama position, normalized trim endpoints and derived end reduction, plus
+  the four EQ frequencies/gains. Voices avoid state-tree access and
   pitch exponentiation; the ratio is computed only when the parameter changes.
 - `getStateInformation` mirrors all cached groups to `SampleSpecificParameterState`
   before writing that child into `parameters.copyState()`. Restore uses
@@ -236,6 +242,36 @@ name and default as an inert compatibility entry, so subsequent parameter indice
 (including Gain) stay stable in existing projects. APVTS still saves/restores its
 value, but nothing reads it for playback, selection, or Apply to All. Old
 sample-specific mode properties may round-trip in the state tree but are ignored.
+
+Sample start/end are appended after all earlier host slots, default to 0/1 for
+older projects, and are saved per selected sample group. The waveform sends
+ordinary host parameter gestures. The processor caches each group's displayed
+sample duration and derives an absolute duration removed from the end from its
+normalized end parameter. Voices latch the proportional start and absolute end
+duration at note start, resolve them against each variation's length, and keep
+at least one frame even for crossed or automated endpoints. Held loop voices read
+updated trim atomics at render boundaries, applying a new start at the next
+repeat and a new end in the current pass only while it remains ahead of playback.
+One-shots keep the note-on range. The trim parameters
+are excluded from the Effects tab's Apply to All dropdown.
+
+Sample Attack and Release follow Sample end in the host parameter layout,
+preserving earlier parameter indices. Both are sample-specific integers in
+0..2000 ms, defaulting to 0 and 60 ms. They use the same per-group
+save/restore, selected-control synchronization and host automation as trim, and
+are excluded from Apply to All. The voice reads the two atomic cached values
+at note start and applies source-time edge fades through `SampleEnvelope`;
+Release also supplies the key-held note-off ADSR release. Later edits affect
+new notes. The waveform's slanted handles and numeric inputs share these
+parameters and standard host gestures for non-warp samples. For `warp=true`
+groups, the editor hides the Attack/Release fields and line handles while the
+saved and automatable parameter values remain available to playback.
+
+Sample playback position is runtime-only and is not serialized. Each voice
+publishes its MIDI note, note-on order and progress through its latched trim
+region in one lock-free atomic integer. The editor reads these snapshots to
+display the newest active voice in the selected group; an empty snapshot hides
+the playhead. No sample buffers or parameter trees cross this audio-to-UI path.
 
 Punch remains stored and published as `0.0..1.0`. Its editor scales the value to
 the whole percentage `0%..100%`; typed percentages divide by 100 before the
@@ -308,6 +344,8 @@ Other parameters and the selected group stay as they were. The dropdown is built
 from `PluginParameters::sampleSpecificParameters`, using each APVTS parameter's
 host-facing name, or the registry's shared effect name for grouped parameters.
 Gain, Punch, Pitch, Formant, Mono, Panorama and EQ are registered.
+The sample trim endpoints use the same persistence and realtime registry but
+are not offered in the dropdown.
 
 The editor observes APVTS change gestures for every registered parameter.
 Selection changes, control refreshes, ordinary host automation, and state restore
@@ -359,7 +397,7 @@ inspection scope and existing render-path blockers.
   and write callbacks using denormalized float values; convert bool/choice values
   in the callbacks and enforce the effect's valid range. This single registry
   drives recognition, processor listeners, selection synchronization, save/restore,
-  UI edit tracking, and Apply to All. Do not add effect-specific button logic or
+  UI edit tracking, and Apply to All where `includeInApplyToAll` is true. Do not add effect-specific button logic or
   separate parameter-ID lists.
 - Multi-parameter effects may share `effectId` (the representative parameter ID)
   and `effectName` in the same registry so Apply to All copies the whole effect.

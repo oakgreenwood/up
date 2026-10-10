@@ -69,6 +69,18 @@ namespace PluginParameters
     inline constexpr float samplePanInterval = 1.0f;
     inline constexpr float samplePanDefault = 0.0f;
 
+    inline constexpr const char* sampleStartId = "sampleStart";
+    inline constexpr const char* sampleEndId = "sampleEnd";
+    inline constexpr const char* sampleAttackMsId = "sampleAttackMs";
+    inline constexpr const char* sampleReleaseMsId = "sampleReleaseMs";
+    // Keep these IDs for saved projects. They apply to every warp-enabled sample;
+    // zero BPM follows the host tempo.
+    inline constexpr const char* sampleLoopBpmId = "sampleLoopBpm";
+    inline constexpr const char* sampleLoopTapeModeId = "sampleLoopTapeMode";
+    inline constexpr float sampleAttackMsDefault = 0.0f;
+    inline constexpr float sampleReleaseMsDefault = 60.0f;
+    inline constexpr float sampleEnvelopeMsMaximum = 2000.0f;
+
     inline constexpr float samplePitchSemitonesMinimum = -12.0f;
     inline constexpr float samplePitchSemitonesMaximum = 12.0f;
     inline constexpr float semitoneInterval = 0.1f;
@@ -90,11 +102,12 @@ namespace PluginParameters
         // Shared ID/name groups several host parameters into one UI effect.
         const char* effectId = nullptr;
         const char* effectName = nullptr;
+        bool includeInApplyToAll = true;
     };
 
     // Register each sample-specific effect once. These callbacks must be realtime-safe.
     // The registry drives automation, selection, persistence, and Apply to All.
-    extern const std::array<SampleSpecificParameter, 14> sampleSpecificParameters;
+    extern const std::array<SampleSpecificParameter, 20> sampleSpecificParameters;
     const SampleSpecificParameter* findSampleSpecificParameter(const juce::String& parameterId) noexcept;
     bool isSampleSpecificParameterId(const juce::String& parameterId) noexcept;
 

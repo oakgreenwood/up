@@ -2,6 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <array>
 #include <functional>
 #include <memory>
 
@@ -13,6 +14,17 @@ class WarpCachePrewarmer;
 class PercussionSound : public juce::SynthesiserSound
 {
 public:
+    struct Waveform
+    {
+        static constexpr int bins = 1024;
+        std::array<std::array<float, bins>, 2> minimum {};
+        std::array<std::array<float, bins>, 2> maximum {};
+        int channels = 0;
+        int samples = 0;
+        double sampleRate = 0.0;
+        float peak = 0.0f;
+    };
+
     struct WarpedCache
     {
         double bpm = 0.0;
@@ -39,6 +51,7 @@ public:
 
     // Audio data access
     const juce::AudioBuffer<float>& getAudioData() const noexcept { return data; }
+    const Waveform& getWaveform() const noexcept { return waveform; }
     double getSourceSampleRate() const noexcept { return sourceSampleRate; }
     int getMidiRootNote() const noexcept { return midiRootNote; }
     const std::vector<NoiseTriggerPoint>& getNoiseTriggerPoints() const noexcept { return noiseTriggerPoints; }
@@ -54,6 +67,8 @@ public:
     int getVelocityGroupCount() const noexcept { return velocityGroupCount; }
     int getVelocityMin() const noexcept { return velocityMin; }
     int getVelocityMax() const noexcept { return velocityMax; }
+    void setVariationIndex(int index) noexcept { variationIndex = index; }
+    int getVariationIndex() const noexcept { return variationIndex; }
 
     // Warp info
     bool isWarpEnabled() const noexcept { return warpEnabled; }
@@ -61,8 +76,8 @@ public:
 
     static double quantizeWarpBpm(double hostBpm) noexcept;
     static double quantizeWarpPitchRatio(double pitchRatio) noexcept;
-    static double warpBaseBpmForHost(double originalBpm, double hostBpm) noexcept;
-    static double warpTimeRatioForHost(double originalBpm, double hostBpm) noexcept;
+    double warpBaseBpmForTarget(double targetBpm) const noexcept;
+    double warpTimeRatioForTarget(double targetBpm) const noexcept;
 
     // Transient metadata (used by PercussionVoice)
     std::unique_ptr<SampleMetadata> metadata = nullptr;
@@ -76,11 +91,13 @@ private:
     juce::String name;
 
     juce::AudioBuffer<float> data;
+    Waveform waveform;
     std::vector<NoiseTriggerPoint> noiseTriggerPoints;
 
     double sourceSampleRate = 48000.0;
     int midiRootNote = 60;
     int warpCacheIndex = -1;
+    int variationIndex = 1;
 
     juce::BigInteger midiNotes;
 

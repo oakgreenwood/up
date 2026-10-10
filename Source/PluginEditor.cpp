@@ -67,12 +67,16 @@ public:
 
 int getArrowDirection(const juce::KeyPress& key)
 {
-    if (key.getModifiers().isAnyModifierKeyDown())
+    // Only Shift changes the step. Leave command/control/alt shortcuts alone
+    // on every platform, including where JUCE aliases Command to Control.
+    if (key.getModifiers().withoutFlags(juce::ModifierKeys::shiftModifier)
+            .isAnyModifierKeyDown())
         return 0;
 
-    if (key == juce::KeyPress::upKey || key == juce::KeyPress::rightKey)
+    const int code = key.getKeyCode();
+    if (code == juce::KeyPress::upKey || code == juce::KeyPress::rightKey)
         return 1;
-    if (key == juce::KeyPress::downKey || key == juce::KeyPress::leftKey)
+    if (code == juce::KeyPress::downKey || code == juce::KeyPress::leftKey)
         return -1;
     return 0;
 }
@@ -82,12 +86,15 @@ bool nudgeSliderFromArrow(juce::Slider& slider,
                           double valueBeforeNudge)
 {
     const int direction = getArrowDirection(key);
-    const double interval = slider.getInterval();
+    const double interval = slider.getInterval() > 0.0
+        ? slider.getInterval() : slider.getRange().getLength() * 0.01;
     if (direction == 0 || interval <= 0.0)
         return false;
 
     const juce::Slider::ScopedDragNotification gesture(slider);
-    slider.setValue(valueBeforeNudge + direction * interval, juce::sendNotificationSync);
+    const double multiplier = key.getModifiers().isShiftDown() ? 10.0 : 1.0;
+    slider.setValue(valueBeforeNudge + direction * interval * multiplier,
+                    juce::sendNotificationSync);
     return true;
 }
 
@@ -372,13 +379,57 @@ void configurePanoramaValueInput(juce::Slider& slider)
 }
 }
 
+bool KeyboardStepSlider::keyPressed(const juce::KeyPress& key)
+{
+    if (key.getModifiers().isShiftDown()
+        && nudgeSliderFromArrow(*this, key, getValue()))
+        return true;
+
+    return juce::Slider::keyPressed(key);
+}
+
 bool ImageKnobSlider::keyPressed(const juce::KeyPress& key)
 {
     if (getArrowDirection(key) == 0)
         return juce::Slider::keyPressed(key);
 
+    if (key.getModifiers().isShiftDown())
+        return nudgeSliderFromArrow(*this, key, getValue());
+
     const juce::Slider::ScopedDragNotification gesture(*this);
     return juce::Slider::keyPressed(key);
+}
+
+void ImageKnobSlider::mouseDown(const juce::MouseEvent& event)
+{
+    dragStartPosition = event.position;
+    dragAxis = ValueDragAxis::undecided;
+    juce::Slider::mouseDown(event);
+}
+
+void ImageKnobSlider::mouseDrag(const juce::MouseEvent& event)
+{
+    const float horizontal = event.position.x - dragStartPosition.x;
+    const float vertical = event.position.y - dragStartPosition.y;
+    if (dragAxis == ValueDragAxis::undecided)
+    {
+        if (juce::jmax(std::abs(horizontal), std::abs(vertical)) < 3.0f)
+            return;
+        dragAxis = std::abs(horizontal) > std::abs(vertical)
+            ? ValueDragAxis::horizontal : ValueDragAxis::vertical;
+    }
+
+    if (dragAxis == ValueDragAxis::horizontal)
+        juce::Slider::mouseDrag(event.withNewPosition(
+            juce::Point<float> { event.position.x, dragStartPosition.y - horizontal }));
+    else
+        juce::Slider::mouseDrag(event);
+}
+
+void ImageKnobSlider::mouseUp(const juce::MouseEvent& event)
+{
+    juce::Slider::mouseUp(event);
+    dragAxis = ValueDragAxis::undecided;
 }
 
 NumericValueInput::NumericValueInput(juce::Slider& controlledSlider,
@@ -396,6 +447,7 @@ NumericValueInput::NumericValueInput(juce::Slider& controlledSlider,
     setColour(juce::Label::textColourId, juce::Colours::black);
     setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
     setColour(juce::Label::outlineColourId, juce::Colours::transparentBlack);
+    setMouseCursor(juce::MouseCursor::UpDownLeftRightResizeCursor);
     setKeyboardType(juce::TextInputTarget::decimalKeyboard);
     slider.addListener(this);
     refreshValue();
@@ -403,6 +455,7 @@ NumericValueInput::NumericValueInput(juce::Slider& controlledSlider,
 
 NumericValueInput::~NumericValueInput()
 {
+    endDrag();
     slider.removeListener(this);
 }
 
@@ -426,6 +479,68 @@ bool NumericValueInput::keyPressed(const juce::KeyPress& key)
 {
     return nudgeSliderFromArrow(slider, key, slider.getValue())
         || juce::Label::keyPressed(key);
+}
+
+void NumericValueInput::mouseDown(const juce::MouseEvent& event)
+{
+    canDrag = event.mods.isLeftButtonDown() && isEnabled() && !isBeingEdited();
+    dragStartValue = slider.getValue();
+    dragAxis = ValueDragAxis::undecided;
+}
+
+void NumericValueInput::mouseDrag(const juce::MouseEvent& event)
+{
+    if (!canDrag || !event.mods.isLeftButtonDown())
+        return;
+
+    if (!dragGesture.has_value())
+    {
+        const int horizontal = event.getDistanceFromDragStartX();
+        const int vertical = event.getDistanceFromDragStartY();
+        if (juce::jmax(std::abs(horizontal), std::abs(vertical)) < 3)
+            return;
+
+        dragAxis = std::abs(horizontal) > std::abs(vertical)
+            ? ValueDragAxis::horizontal : ValueDragAxis::vertical;
+        dragGesture.emplace(slider);
+        if (manualGestureParameter != nullptr)
+            manualGestureParameter->beginChangeGesture();
+    }
+
+    const int movement = dragAxis == ValueDragAxis::horizontal
+        ? event.getDistanceFromDragStartX() : -event.getDistanceFromDragStartY();
+    const double dragExtent = juce::jmax(1, slider.getMouseDragSensitivity());
+    const double proportion = juce::jlimit(0.0, 1.0,
+        slider.valueToProportionOfLength(dragStartValue)
+            + movement / dragExtent);
+    slider.setValue(slider.proportionOfLengthToValue(proportion), juce::sendNotificationSync);
+}
+
+void NumericValueInput::mouseUp(const juce::MouseEvent& event)
+{
+    const bool couldDrag = canDrag;
+    canDrag = false;
+    if (dragGesture.has_value())
+    {
+        endDrag();
+        return;
+    }
+
+    if (couldDrag && event.mouseWasDraggedSinceMouseDown()
+        && event.getDistanceFromDragStart() < 4
+        && contains(event.getPosition()) && !event.mods.isPopupMenu())
+    {
+        showEditor();
+        return;
+    }
+
+    juce::Label::mouseUp(event);
+}
+
+void NumericValueInput::visibilityChanged()
+{
+    if (!isShowing())
+        endDrag();
 }
 
 void NumericValueInput::textEditorReturnKeyPressed(juce::TextEditor& editor)
@@ -462,8 +577,27 @@ void NumericValueInput::commitEdit(const juce::String& text)
 
 void NumericValueInput::discardEdit()
 {
+    endDrag();
     hideEditor(true);
     refreshValue();
+}
+
+void NumericValueInput::endDrag()
+{
+    canDrag = false;
+    if (!dragGesture.has_value())
+        return;
+
+    if (manualGestureParameter != nullptr)
+        manualGestureParameter->endChangeGesture();
+    dragGesture.reset();
+    dragAxis = ValueDragAxis::undecided;
+}
+
+void NumericValueInput::refreshDisplay()
+{
+    if (!isBeingEdited())
+        refreshValue();
 }
 
 void NumericValueInput::sliderValueChanged(juce::Slider*)
@@ -482,6 +616,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     : AudioProcessorEditor (&p),
       processorRef (p),
       equaliserEditor(p),
+      sampleWaveformEditor(p),
       noiseWaveform(p)
 {
     juce::ignoreUnused (processorRef);
@@ -651,6 +786,27 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleEffectsModalSurface = std::make_unique<SampleEffectsModalSurface>();
     addAndMakeVisible(*sampleEffectsModalSurface);
 
+    const auto configureSampleTab = [this] (juce::TextButton& button)
+    {
+        addAndMakeVisible(button);
+        button.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
+        button.setColour(juce::TextButton::buttonOnColourId, juce::Colours::black);
+        button.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+        button.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    };
+    configureSampleTab(effectsTabButton);
+    configureSampleTab(sampleTabButton);
+    effectsTabButton.onClick = [this]
+    {
+        effectsTabSelected = true;
+        updateSampleEditorTabVisibility();
+    };
+    sampleTabButton.onClick = [this]
+    {
+        effectsTabSelected = false;
+        updateSampleEditorTabVisibility();
+    };
+
     addAndMakeVisible(sampleGainSlider);
     sampleGainSlider.setComponentID(PluginUI::sampleGainSliderId);
     sampleGainSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
@@ -749,6 +905,154 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
             selectApplyToAllEffect(*parameter);
     };
 
+    addAndMakeVisible(sampleWaveformEditor);
+    addAndMakeVisible(sampleBeatSnapLabel);
+    sampleBeatSnapLabel.setText("BEAT SNAP", juce::dontSendNotification);
+    sampleBeatSnapLabel.setColour(juce::Label::textColourId, juce::Colour(0xff8e8b8b));
+    sampleBeatSnapLabel.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+    sampleBeatSnapLabel.setJustificationType(juce::Justification::centredRight);
+    addAndMakeVisible(sampleBeatSnapTarget);
+    sampleBeatSnapTarget.setName("Beat snap targets");
+    sampleBeatSnapTarget.setTooltip("Choose OFF, transients, or musical-grid snap points");
+    sampleBeatSnapTarget.setColour(juce::ComboBox::backgroundColourId, juce::Colours::transparentBlack);
+    sampleBeatSnapTarget.setColour(juce::ComboBox::textColourId, juce::Colours::black);
+    sampleBeatSnapTarget.setColour(juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
+    sampleBeatSnapTarget.setColour(juce::ComboBox::arrowColourId, juce::Colours::black);
+    sampleBeatSnapTarget.addItem("OFF", 1);
+    sampleBeatSnapTarget.addItem("TRANSIENTS", 2);
+    sampleBeatSnapTarget.addItem("1/4", 3);
+    sampleBeatSnapTarget.addItem("1/8", 4);
+    sampleBeatSnapTarget.addItem("1/16", 5);
+    sampleBeatSnapTarget.setSelectedId(2, juce::dontSendNotification);
+    sampleBeatSnapTarget.onChange = [this]
+    {
+        updateSampleEditorTabVisibility();
+    };
+    addAndMakeVisible(sampleBeatSnapButton);
+    sampleBeatSnapButton.setClickingTogglesState(true);
+    sampleBeatSnapButton.setTooltip("Snap start and end to transient points");
+    sampleBeatSnapButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
+    sampleBeatSnapButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff8e8b8b));
+    sampleBeatSnapButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    sampleBeatSnapButton.setColour(juce::TextButton::textColourOnId, juce::Colours::black);
+    sampleBeatSnapButton.onClick = [this] { updateSampleEditorTabVisibility(); };
+
+    const auto configureSampleEnvelopeInput = [this] (juce::Slider& slider,
+        NumericValueInput& valueInput, juce::Label& label, const char* parameterId,
+        const char* caption,
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment)
+    {
+        addChildComponent(slider);
+        slider.setSliderStyle(juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        slider.setMouseDragSensitivity(150);
+        bindSliderToParameter(slider, parameterId, attachment);
+        configureSignedDecimalValueInput(slider, " ms");
+        slider.textFromValueFunction = [] (double value)
+        {
+            return juce::String(value, 0) + " ms";
+        };
+        slider.updateText();
+        valueInput.discardEdit();
+        addAndMakeVisible(valueInput);
+        addAndMakeVisible(label);
+        configureKnobLabel(label, caption);
+    };
+    configureSampleEnvelopeInput(sampleAttackSlider, sampleAttackValueInput, sampleAttackLabel,
+        PluginParameters::sampleAttackMsId, "ATTACK:", sampleAttackAttachment);
+    configureSampleEnvelopeInput(sampleReleaseSlider, sampleReleaseValueInput, sampleReleaseLabel,
+        PluginParameters::sampleReleaseMsId, "RELEASE:", sampleReleaseAttachment);
+    const auto configureTrimInput = [this] (juce::Slider& slider, NumericValueInput& input,
+                                            const char* parameterId)
+    {
+        addChildComponent(slider);
+        slider.setSliderStyle(juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        slider.setMouseDragSensitivity(150);
+        slider.setRange(0.0, 1.0, 1.0);
+        configureSignedDecimalValueInput(slider, " ms");
+        slider.textFromValueFunction = [] (double value)
+        {
+            return juce::String(value, 0) + " ms";
+        };
+        slider.updateText();
+        addAndMakeVisible(input);
+        input.setManualGestureParameter(processorRef.parameters.getParameter(parameterId));
+        input.refreshDisplay();
+        slider.onValueChange = [this, sliderPtr = &slider, parameterId]
+        {
+            commitSampleTrimInput(*sliderPtr, parameterId);
+        };
+    };
+    configureTrimInput(sampleStartMsSlider, sampleStartValue, PluginParameters::sampleStartId);
+    configureTrimInput(sampleEndMsSlider, sampleEndValue, PluginParameters::sampleEndId);
+    addChildComponent(sampleLoopBpmSlider);
+    sampleLoopBpmSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    sampleLoopBpmSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    sampleLoopBpmSlider.setMouseDragSensitivity(150);
+    bindSliderToParameter(sampleLoopBpmSlider, PluginParameters::sampleLoopBpmId,
+                          sampleLoopBpmAttachment);
+    sampleLoopBpmSlider.textFromValueFunction = [this] (double value)
+    {
+        const double bpm = value >= 1.0 ? value : processorRef.getProjectBpm();
+        return juce::String(bpm, std::abs(bpm - std::round(bpm)) < 0.05 ? 0 : 1) + " BPM";
+    };
+    sampleLoopBpmSlider.valueFromTextFunction = [this] (const juce::String& text)
+    {
+        double value = 0.0;
+        return parseSignedDecimalInput(text, " BPM", value)
+            ? value : sampleLoopBpmSlider.getValue();
+    };
+    sampleLoopBpmSlider.updateText();
+    addAndMakeVisible(sampleLoopBpmValueInput);
+    sampleLoopBpmValueInput.discardEdit();
+    addAndMakeVisible(sampleLoopBpmLabel);
+    sampleLoopBpmLabel.setText("BPM:", juce::dontSendNotification);
+    sampleLoopBpmLabel.setColour(juce::Label::textColourId, juce::Colour(0xff8e8b8b));
+    sampleLoopBpmLabel.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+    addAndMakeVisible(sampleOriginalBpmLabel);
+    sampleOriginalBpmLabel.setColour(juce::Label::textColourId, juce::Colour(0xff8e8b8b));
+    sampleOriginalBpmLabel.setFont(juce::Font(juce::FontOptions(14.0f)));
+    addAndMakeVisible(sampleTempoSyncButton);
+    sampleTempoSyncButton.setClickingTogglesState(true);
+    sampleTempoSyncButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
+    sampleTempoSyncButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffeeeeee));
+    sampleTempoSyncButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    sampleTempoSyncButton.setColour(juce::TextButton::textColourOnId, juce::Colours::black);
+    sampleTempoSyncButton.setTooltip("Follow project tempo when on; use the sample's original BPM when off");
+    sampleTempoSyncButton.onClick = [this]
+    {
+        const double originalBpm = processorRef.getSampleGroupOriginalBpm(
+            processorRef.getSelectedSampleGroupIndex());
+        const bool sync = sampleTempoSyncButton.getToggleState();
+        sampleTempoSyncButton.setAlpha(sync ? 1.0f : 0.6f);
+        const juce::Slider::ScopedDragNotification gesture(sampleLoopBpmSlider);
+        sampleLoopBpmSlider.setValue(sync ? 0.0 : originalBpm, juce::sendNotificationSync);
+    };
+    addAndMakeVisible(sampleLoopModeButton);
+    sampleLoopModeButton.setClickingTogglesState(true);
+    sampleLoopModeButton.setTooltip("Switch between Rubber Band pitch preservation and direct speed/pitch playback");
+    sampleLoopModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processorRef.parameters, PluginParameters::sampleLoopTapeModeId, sampleLoopModeButton);
+    sampleStartLabel.setText("START:", juce::dontSendNotification);
+    sampleEndLabel.setText("END:", juce::dontSendNotification);
+    for (auto* label : { &sampleStartLabel, &sampleAttackLabel, &sampleEndLabel, &sampleReleaseLabel })
+    {
+        addAndMakeVisible(*label);
+        label->setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+        label->setColour(juce::Label::textColourId, juce::Colour(0xff8e8b8b));
+        label->setJustificationType(juce::Justification::centredLeft);
+    }
+    for (juce::Label* value : { static_cast<juce::Label*>(&sampleStartValue),
+                              static_cast<juce::Label*>(&sampleAttackValueInput),
+                              static_cast<juce::Label*>(&sampleEndValue),
+                              static_cast<juce::Label*>(&sampleReleaseValueInput) })
+    {
+        addAndMakeVisible(*value);
+        value->setFont(juce::Font(juce::FontOptions(15.0f, juce::Font::bold)));
+        value->setColour(juce::Label::textColourId, juce::Colours::black);
+        value->setJustificationType(juce::Justification::centredLeft);
+    }
     addAndMakeVisible(applyToAllButton);
     applyToAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
     applyToAllButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
@@ -780,13 +1084,6 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
         refreshApplyToAllButton();
         grabKeyboardFocus();
     };
-
-    addAndMakeVisible(warpButton);
-    warpButton.setComponentID(PluginUI::tempoSyncButtonId);
-    warpButton.setButtonText({});
-    warpButton.setLookAndFeel(customLNF.get());
-    warpAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-    processorRef.parameters, PluginParameters::warpEnabledId, warpButton);
 
     sampleGroupSelector.setSampleGroups(processorRef.getSampleGroups());
     rebuildSampleGroupActivityMap();
@@ -822,6 +1119,8 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     for (const auto& definition : PluginParameters::sampleSpecificParameters)
         if (auto* parameter = processorRef.parameters.getParameter(definition.id))
         {
+            if (!definition.includeInApplyToAll)
+                continue;
             sampleSpecificEditBindings.push_back(SampleSpecificEditBinding { parameter });
             if (definition.effectId == nullptr || parameter->paramID == definition.effectId)
             {
@@ -857,6 +1156,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
     noiseFileChooser.reset();
     equaliserEditor.endDrag();
+    sampleWaveformEditor.endDrag();
     equaliserEditor.onSelected = {};
     stopTimer();
     for (const auto& binding : sampleSpecificSliderBindings)
@@ -870,6 +1170,8 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     sampleGroupSelector.onSelectedIndexChanged = {};
     applyToAllEffectSelector.onChange = {};
     editSamplesButton.onClick = {};
+    effectsTabButton.onClick = {};
+    sampleTabButton.onClick = {};
     if (sampleEffectsCloseButton != nullptr)
         sampleEffectsCloseButton->onClick = {};
 
@@ -889,7 +1191,6 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     sampleFormantSlider.setLookAndFeel(nullptr);
     sampleMonoSlider.setLookAndFeel(nullptr);
     samplePanSlider.setLookAndFeel(nullptr);
-    warpButton.setLookAndFeel(nullptr);
     customLNF.reset();
 }
 
@@ -916,6 +1217,7 @@ void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
 {
     const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
     equaliserEditor.selectionChanged();
+    sampleWaveformEditor.selectionChanged();
     // An edit for the previous sample must never be committed to a new selection.
     sampleGainValueInput.discardEdit();
     samplePunchValueInput.discardEdit();
@@ -923,7 +1225,17 @@ void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
     sampleFormantValueInput.discardEdit();
     sampleMonoValueInput.discardEdit();
     samplePanValueInput.discardEdit();
+    sampleAttackValueInput.discardEdit();
+    sampleReleaseValueInput.discardEdit();
+    sampleStartValue.discardEdit();
+    sampleEndValue.discardEdit();
+    sampleLoopBpmValueInput.discardEdit();
     displayedSampleGroupIndex = processorRef.getSelectedSampleGroupIndex();
+    const double originalBpm = processorRef.getSampleGroupOriginalBpm(displayedSampleGroupIndex);
+    sampleOriginalBpmLabel.setText(originalBpm > 0.0
+        ? "ORIGINAL: " + juce::String(originalBpm, 0) + " BPM" : juce::String(),
+        juce::dontSendNotification);
+    updateSampleEditorTabVisibility();
     for (const auto& binding : sampleSpecificSliderBindings)
     {
         if (binding.slider == nullptr)
@@ -933,6 +1245,74 @@ void AudioPluginAudioProcessorEditor::refreshSampleSpecificControls()
         const float sampleValue = processorRef.getSampleSpecificParameterValue(binding.parameterId, fallbackValue);
         binding.slider->setValue(sampleValue, juce::sendNotificationSync);
     }
+    const bool tempoSynced = sampleLoopBpmSlider.getValue() < 1.0;
+    sampleTempoSyncButton.setToggleState(tempoSynced, juce::dontSendNotification);
+    sampleTempoSyncButton.setAlpha(tempoSynced ? 1.0f : 0.6f);
+    updateSampleTrimInputs();
+    resized();
+}
+
+void AudioPluginAudioProcessorEditor::updateSampleTrimInputs()
+{
+    sampleWaveformEditor.selectionChanged();
+    const double durationMs = sampleWaveformEditor.getDurationMs();
+    const double sliderMaximum = juce::jmax(1.0, std::ceil(durationMs));
+    const juce::ScopedValueSetter<bool> guard(ignoreSampleTrimInputChanges, true);
+    for (auto* slider : { &sampleStartMsSlider, &sampleEndMsSlider })
+        if (slider->getMaximum() != sliderMaximum)
+            slider->setRange(0.0, sliderMaximum, 1.0);
+    if (!sampleStartValue.editing())
+    {
+        sampleStartMsSlider.setValue(std::round(sampleWaveformEditor.getStartMs()),
+                                     juce::dontSendNotification);
+        sampleStartValue.refreshDisplay();
+    }
+    if (!sampleEndValue.editing())
+    {
+        sampleEndMsSlider.setValue(std::round(sampleWaveformEditor.getEndMs()),
+                                   juce::dontSendNotification);
+        sampleEndValue.refreshDisplay();
+    }
+}
+
+void AudioPluginAudioProcessorEditor::commitSampleTrimInput(juce::Slider& slider,
+                                                             const char* parameterId)
+{
+    if (ignoreSampleTrimInputChanges)
+        return;
+
+    auto* parameter = processorRef.parameters.getParameter(parameterId);
+    const auto* waveform = processorRef.getSampleWaveform(processorRef.getSelectedSampleGroupIndex());
+    const double durationMs = sampleWaveformEditor.getDurationMs();
+    if (parameter == nullptr || waveform == nullptr || waveform->samples <= 0 || durationMs <= 0.0)
+        return;
+
+    sampleWaveformEditor.selectionChanged();
+    const double gap = 1.0 / waveform->samples;
+    const double position = slider.getValue() / durationMs;
+    const bool isStart = &slider == &sampleStartMsSlider;
+    const double value = isStart
+        ? juce::jlimit(0.0, juce::jmax(0.0, sampleWaveformEditor.getEndMs() / durationMs - gap),
+                       position)
+        : juce::jlimit(juce::jmin(1.0, sampleWaveformEditor.getStartMs() / durationMs + gap),
+                       1.0, position);
+    const float current = processorRef.getSampleSpecificParameterValue(parameterId,
+                                                                         isStart ? 0.0f : 1.0f);
+    if (std::abs(value - current) > 1.0e-7)
+    {
+        const bool inputDragging = (isStart ? sampleStartValue : sampleEndValue).dragging();
+        if (!inputDragging)
+            parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost(parameter->convertTo0to1(static_cast<float>(value)));
+        if (!inputDragging)
+            parameter->endChangeGesture();
+    }
+    sampleWaveformEditor.selectionChanged();
+    if ((isStart ? sampleStartValue : sampleEndValue).editing())
+        slider.setValue(std::round(isStart ? sampleWaveformEditor.getStartMs()
+                                           : sampleWaveformEditor.getEndMs()),
+                        juce::dontSendNotification);
+    updateSampleTrimInputs();
 }
 
 void AudioPluginAudioProcessorEditor::parameterGestureChanged(int parameterIndex, bool gestureIsStarting)
@@ -1012,25 +1392,12 @@ void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBe
     sampleEffectsModalOpen = shouldBeVisible;
     editSamplesButton.setVisible(!shouldBeVisible);
 
-    if (!shouldBeVisible)
-        equaliserEditor.endDrag();
-
     if (sampleEffectsModalSurface != nullptr)
         sampleEffectsModalSurface->setVisible(shouldBeVisible);
     if (sampleEffectsCloseButton != nullptr)
         sampleEffectsCloseButton->setVisible(shouldBeVisible);
 
-    juce::Component* const sampleEffectComponents[] = {
-        &sampleGainSlider, &sampleGainValueInput, &sampleGainLabel,
-        &samplePunchSlider, &samplePunchValueInput, &samplePunchLabel,
-        &samplePitchSlider, &samplePitchValueInput, &samplePitchLabel,
-        &sampleFormantSlider, &sampleFormantValueInput, &sampleFormantLabel,
-        &sampleMonoSlider, &sampleMonoValueInput, &sampleMonoLabel,
-        &samplePanSlider, &samplePanValueInput, &samplePanLabel,
-        &equaliserEditor, &applyToAllButton, &applyToAllEffectSelector
-    };
-    for (auto* component : sampleEffectComponents)
-        component->setVisible(shouldBeVisible);
+    updateSampleEditorTabVisibility();
 
     juce::Component* const globalEffectComponents[] = {
         &rzhavSlider, &rzhavLabel,
@@ -1039,8 +1406,7 @@ void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBe
         &noiseSourceSelector, &noiseGainSlider, &noiseLabel,
         &noiseSourceLabel, &noiseTriggerLabel, &noiseFollowLabel, &noiseWaveform,
         &noiseTriggerSelector, &noiseModulationSlider, &noiseModulationLabel,
-        &noiseReleaseSlider, &noiseReleaseLabel, &noiseReleaseValueInput,
-        &warpButton
+        &noiseReleaseSlider, &noiseReleaseLabel, &noiseReleaseValueInput
     };
     for (auto* component : globalEffectComponents)
         component->setVisible(!shouldBeVisible);
@@ -1048,6 +1414,72 @@ void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBe
         noisePanelSurface->setVisible(!shouldBeVisible);
 
     repaint();
+}
+
+void AudioPluginAudioProcessorEditor::updateSampleEditorTabVisibility()
+{
+    const bool showEffects = sampleEffectsModalOpen && effectsTabSelected;
+    const bool showSample = sampleEffectsModalOpen && !effectsTabSelected;
+    if (!showEffects)
+        equaliserEditor.endDrag();
+
+    effectsTabButton.setVisible(sampleEffectsModalOpen);
+    sampleTabButton.setVisible(sampleEffectsModalOpen);
+    effectsTabButton.setToggleState(effectsTabSelected, juce::dontSendNotification);
+    sampleTabButton.setToggleState(!effectsTabSelected, juce::dontSendNotification);
+
+    juce::Component* const effectsComponents[] = {
+        &samplePunchSlider, &samplePunchValueInput, &samplePunchLabel,
+        &samplePitchSlider, &samplePitchValueInput, &samplePitchLabel,
+        &sampleFormantSlider, &sampleFormantValueInput, &sampleFormantLabel,
+        &sampleMonoSlider, &sampleMonoValueInput, &sampleMonoLabel,
+        &equaliserEditor, &applyToAllButton, &applyToAllEffectSelector
+    };
+    for (auto* component : effectsComponents)
+        component->setVisible(showEffects);
+
+    juce::Component* const sampleComponents[] = {
+        &sampleGainSlider, &sampleGainValueInput, &sampleGainLabel,
+        &samplePanSlider, &samplePanValueInput, &samplePanLabel,
+        &sampleWaveformEditor,
+    };
+    for (auto* component : sampleComponents)
+        component->setVisible(showSample);
+    const int selectedGroup = processorRef.getSelectedSampleGroupIndex();
+    const bool warpMarked = processorRef.isSampleGroupWarpMarked(selectedGroup);
+    const auto* metadata = processorRef.getSampleMetadata(selectedGroup);
+    const bool loopMarked = metadata != nullptr && metadata->loop;
+    const bool showLoopBeatSnap = showSample && warpMarked && loopMarked;
+    sampleBeatSnapLabel.setVisible(showLoopBeatSnap);
+    sampleBeatSnapTarget.setVisible(showLoopBeatSnap);
+    sampleBeatSnapButton.setVisible(showSample && warpMarked && !loopMarked);
+    using Target = SampleWaveformEditor::BeatSnapTarget;
+    const auto target = !warpMarked ? Target::off
+                      : !loopMarked ? (sampleBeatSnapButton.getToggleState() ? Target::transients : Target::off)
+                      : sampleBeatSnapTarget.getSelectedId() == 1 ? Target::off
+                      : sampleBeatSnapTarget.getSelectedId() == 3 ? Target::quarterNote
+                      : sampleBeatSnapTarget.getSelectedId() == 4 ? Target::eighthNote
+                      : sampleBeatSnapTarget.getSelectedId() == 5 ? Target::sixteenthNote
+                      : Target::transients;
+    sampleWaveformEditor.setBeatSnapTarget(target);
+    const bool showSampleTimingInputs = showSample && !warpMarked;
+    for (auto* component : { static_cast<juce::Component*>(&sampleStartValue),
+                             static_cast<juce::Component*>(&sampleStartLabel),
+                             static_cast<juce::Component*>(&sampleEndValue),
+                             static_cast<juce::Component*>(&sampleEndLabel),
+                             static_cast<juce::Component*>(&sampleAttackValueInput),
+                             static_cast<juce::Component*>(&sampleAttackLabel),
+                             static_cast<juce::Component*>(&sampleReleaseValueInput),
+                             static_cast<juce::Component*>(&sampleReleaseLabel) })
+        component->setVisible(showSampleTimingInputs);
+    const bool showWarp = showSample
+        && processorRef.isSampleGroupWarpEnabled(processorRef.getSelectedSampleGroupIndex());
+    for (auto* component : { static_cast<juce::Component*>(&sampleLoopBpmLabel),
+                             static_cast<juce::Component*>(&sampleLoopBpmValueInput),
+                             static_cast<juce::Component*>(&sampleTempoSyncButton),
+                             static_cast<juce::Component*>(&sampleLoopModeButton),
+                             static_cast<juce::Component*>(&sampleOriginalBpmLabel) })
+        component->setVisible(showWarp);
 }
 
 void AudioPluginAudioProcessorEditor::openNoiseFileChooser()
@@ -1111,6 +1543,7 @@ void AudioPluginAudioProcessorEditor::visibilityChanged()
 {
     if (!isShowing())
     {
+        sampleWaveformEditor.endDrag();
         noiseFileDragActive = false;
         repaint();
     }
@@ -1207,6 +1640,16 @@ void AudioPluginAudioProcessorEditor::selectSampleGroupForEditing(int groupIndex
 
 void AudioPluginAudioProcessorEditor::timerCallback()
 {
+    updateSampleTrimInputs();
+    if (!sampleLoopBpmValueInput.editing()
+        && sampleLoopBpmSlider.getValue() < 1.0)
+        sampleLoopBpmValueInput.setText(sampleLoopBpmSlider.getTextFromValue(0.0),
+                                         juce::dontSendNotification);
+    const bool tempoSynced = sampleLoopBpmSlider.getValue() < 1.0;
+    sampleTempoSyncButton.setToggleState(tempoSynced, juce::dontSendNotification);
+    sampleTempoSyncButton.setAlpha(tempoSynced ? 1.0f : 0.6f);
+    sampleLoopModeButton.setButtonText(sampleLoopModeButton.getToggleState()
+        ? "SPEED + PITCH" : "PRESERVE PITCH");
     const auto revision = processorRef.getNoiseImportRevision();
     if (revision != displayedNoiseRevision)
     {
@@ -1331,33 +1774,83 @@ void AudioPluginAudioProcessorEditor::resized()
     if (sampleEffectsModalSurface != nullptr)
         sampleEffectsModalSurface->setBounds(modalBounds);
 
-    const int modalKnobCentreY = modalBounds.getY() + 68;
-    placeKnobWithValueAndLabel(sampleGainSlider, sampleGainLabel, sampleGainValueInput,
-                               getWidth() - labelWidth - 429, modalKnobCentreY);
-    placeKnobWithValueAndLabel(samplePunchSlider, samplePunchLabel, samplePunchValueInput,
-                               getWidth() - labelWidth - 348, modalKnobCentreY);
+    constexpr int tabWidth = 112;
+    constexpr int tabGap = 8;
+    constexpr int tabHeight = 30;
+    const int tabsLeft = modalBounds.getCentreX() - (2 * tabWidth + tabGap) / 2;
+    effectsTabButton.setBounds(tabsLeft, modalBounds.getY() + 14, tabWidth, tabHeight);
+    sampleTabButton.setBounds(tabsLeft + tabWidth + tabGap,
+                              modalBounds.getY() + 14, tabWidth, tabHeight);
+
+    const int modalKnobCentreY = modalBounds.getY() + 82;
+    constexpr int effectsKnobStep = 110;
+    const int effectsKnobsLeft = modalBounds.getCentreX()
+        - (labelWidth + 3 * effectsKnobStep) / 2;
     placeKnobWithValueAndLabel(samplePitchSlider, samplePitchLabel, samplePitchValueInput,
-                               getWidth() - labelWidth - 267, modalKnobCentreY);
+                               effectsKnobsLeft, modalKnobCentreY);
     placeKnobWithValueAndLabel(sampleFormantSlider, sampleFormantLabel, sampleFormantValueInput,
-                               getWidth() - labelWidth - 186, modalKnobCentreY);
+                               effectsKnobsLeft + effectsKnobStep, modalKnobCentreY);
     placeKnobWithValueAndLabel(sampleMonoSlider, sampleMonoLabel, sampleMonoValueInput,
-                               getWidth() - labelWidth - 105, modalKnobCentreY);
+                               effectsKnobsLeft + 2 * effectsKnobStep, modalKnobCentreY);
+    placeKnobWithValueAndLabel(samplePunchSlider, samplePunchLabel, samplePunchValueInput,
+                               effectsKnobsLeft + 3 * effectsKnobStep, modalKnobCentreY);
+
+    constexpr int sampleKnobStep = 120;
+    const int sampleKnobsLeft = modalBounds.getCentreX() - (labelWidth + sampleKnobStep) / 2;
+    placeKnobWithValueAndLabel(sampleGainSlider, sampleGainLabel, sampleGainValueInput,
+                               sampleKnobsLeft, modalKnobCentreY);
     placeKnobWithValueAndLabel(samplePanSlider, samplePanLabel, samplePanValueInput,
-                               getWidth() - labelWidth - 24, modalKnobCentreY);
+                               sampleKnobsLeft + sampleKnobStep, modalKnobCentreY);
+    const int baseWaveformWidth = juce::jmax(1, modalBounds.getWidth() / 3);
+    const bool wideWaveform = processorRef.isSampleGroupWarpMarked(
+        processorRef.getSelectedSampleGroupIndex());
+    const int waveformWidth = wideWaveform
+        ? juce::roundToInt(baseWaveformWidth * 1.6f) : baseWaveformWidth;
+    const int waveformHeight = juce::jmax(1, baseWaveformWidth / 3) + 32;
+    constexpr int valuesWidth = 162;
+    constexpr int valuesGap = 24;
+    const int waveformLeft = modalBounds.getCentreX()
+        - (wideWaveform ? waveformWidth : waveformWidth + valuesGap + valuesWidth) / 2;
+    const int waveformTop = modalBounds.getY() + 171;
+    sampleWaveformEditor.setBounds(waveformLeft, waveformTop, waveformWidth, waveformHeight);
+    const int valuesLeft = waveformLeft + waveformWidth + valuesGap;
+    const int valuesTop = waveformTop + 31 + (waveformHeight - 32 - 112) / 2;
+    const auto placeSampleValue = [=] (juce::Label& label, juce::Label& value, int row)
+    {
+        label.setBounds(valuesLeft, valuesTop + row * 28, 76, 26);
+        value.setBounds(valuesLeft + 76, valuesTop + row * 28, 86, 26);
+    };
+    placeSampleValue(sampleStartLabel, sampleStartValue, 0);
+    placeSampleValue(sampleAttackLabel, sampleAttackValueInput, 1);
+    placeSampleValue(sampleEndLabel, sampleEndValue, 2);
+    placeSampleValue(sampleReleaseLabel, sampleReleaseValueInput, 3);
+    const int loopControlsTop = waveformTop + waveformHeight + 13;
+    sampleLoopBpmLabel.setBounds(waveformLeft, loopControlsTop, 52, 27);
+    sampleLoopBpmValueInput.setBounds(waveformLeft + 48, loopControlsTop, 94, 27);
+    sampleTempoSyncButton.setBounds(waveformLeft + 150, loopControlsTop, 134, 27);
+    sampleLoopModeButton.setBounds(waveformLeft + 294, loopControlsTop, 160, 27);
+    sampleOriginalBpmLabel.setBounds(waveformLeft, loopControlsTop + 31,
+                                     wideWaveform ? juce::jmax(0, waveformWidth - 236) : 250, 24);
+    sampleBeatSnapLabel.setBounds(waveformLeft + waveformWidth - 228,
+                                  loopControlsTop + 31, 90, 24);
+    sampleBeatSnapTarget.setBounds(waveformLeft + waveformWidth - 132,
+                                   loopControlsTop + 31, 126, 24);
+    sampleBeatSnapButton.setBounds(waveformLeft + waveformWidth - 116,
+                                   loopControlsTop + 31, 110, 24);
     constexpr int applyToAllWidth = 150;
     constexpr int effectSelectorWidth = 116;
     constexpr int applyToAllGap = 8;
-    constexpr int applyToAllRight = 24;
-    const int effectSelectorLeft = getWidth() - applyToAllRight - effectSelectorWidth;
+    const int applyToAllLeft = modalBounds.getCentreX()
+        - (applyToAllWidth + applyToAllGap + effectSelectorWidth) / 2;
     applyToAllButton.setBounds(
-        effectSelectorLeft - applyToAllGap - applyToAllWidth,
-        modalBounds.getY() + 152, applyToAllWidth, 28);
+        applyToAllLeft, modalBounds.getY() + 346, applyToAllWidth, 28);
     applyToAllEffectSelector.setBounds(
-        effectSelectorLeft, modalBounds.getY() + 152, effectSelectorWidth, 28);
-    warpButton.setBounds(23, 18, 170, 110);
+        applyToAllLeft + applyToAllWidth + applyToAllGap,
+        modalBounds.getY() + 346, effectSelectorWidth, 28);
     constexpr int equaliserHeight = 170;
     constexpr int equaliserWidth = equaliserHeight * 5 / 2;
-    equaliserEditor.setBounds(24, modalBounds.getY() + 198, equaliserWidth, equaliserHeight);
+    equaliserEditor.setBounds(modalBounds.getCentreX() - equaliserWidth / 2,
+                              modalBounds.getY() + 171, equaliserWidth, equaliserHeight);
 
     constexpr int closeButtonSize = 26;
     constexpr int closeButtonGap = 6;

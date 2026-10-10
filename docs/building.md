@@ -115,6 +115,9 @@ and Windows, with no additional dependency or platform-specific implementation.
 `Source/UI/NoiseWaveformEditor.*` is included in the same plugin target and uses
 the existing JUCE GUI modules. Its peak summaries are prepared by the noise
 loader; no file reader, thumbnail worker or additional library is needed in UI.
+`Source/UI/SampleWaveformEditor.*` uses the same modules. Percussion waveform
+summaries are prepared from embedded sample buffers during loading, so the UI
+adds no decoder or platform-specific dependency.
 
 Runtime noise import uses JUCE's existing audio-format module and a JUCE worker
 thread. `JUCE_USE_MP3AUDIOFORMAT=1` enables JUCE's bundled MP3 decoder on all

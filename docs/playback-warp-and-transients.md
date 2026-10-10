@@ -363,13 +363,29 @@ BinaryData JSON lookup uses the exact WAV stem: `1_v1_n1.wav` loads
 `1_v1_n1.transients.json`. Each velocity/variation/pitch suffix has its own file;
 older generated resource-name lookup is a fallback.
 
-Fields: `sampleRate`, `warp`, `loop`, `ignoreTransientShaper`, `transients`.
+Fields: `sampleRate`, `bpm`, `warp`, `loop`, `ignoreTransientShaper`, `transients`.
 Missing/invalid metadata falls back to one transient at `0.0`, `warp=false`,
 `loop=false`.
 
-- Sounds are constructed with original BPM `153.0`.
-- Host tempo `<= 90 BPM` uses half-time warp base (`originalBpm * 0.5`).
+- JSON may supply original `bpm` (currently `153` in every bundled warp source);
+  warp-enabled samples without it retain the `153.0` source BPM fallback.
+- Every warp-enabled sample group has a target BPM. `sampleLoopBpm=0` follows
+  the project; a positive value fixes that group's target. Time ratio is
+  original BPM / target BPM for loops and non-looping warp samples.
+  The SAMPLE tab's TEMPO SYNC button switches between zero and the source's
+  original BPM, retaining the choice in the existing per-group parameter.
+  The former global Tempo sync parameter is retained only as an inert host slot.
+- `loop=true` makes the source eligible for tempo playback even if its older
+  JSON omitted `warp=true`.
+- `sampleLoopTapeMode=false` uses the existing Rubber Band warp/cache path and
+  preserves pitch. `true` plays the original source directly at target/source
+  BPM speed, changing duration and pitch together without Rubber Band. Mode
+  changes on a sounding warp sample keep its source position. Only `loop=true`
+  sounds wrap while the key is held.
 - Warp BPM is quantized to `0.01 BPM`; offline caches are always enabled.
+- The cache worker uses each warp group's target BPM and skips direct-playback
+  sounds. Fixed BPM changes invalidate the old cache key and can use realtime
+  warp until the new cache is ready.
 - Warp-cache preparation uses one persistent worker. BPM changes debounce for
   `0.12 s`; pitch changes debounce for `0.08 s`.
 - `HostTempoTracker` reads JUCE's optional position/BPM directly. A missing,
@@ -535,10 +551,50 @@ playback time. Sustain follows the original source position as playback advances
 There is no one-shot duration mode, background pitch render, or preparation wait.
 Legacy saved `samplePitchPreserveLength` values have no playback effect.
 
-With metadata `warp=true` and tempo sync enabled, non-neutral pitch must preserve
+With warp-enabled metadata and pitch-preserving mode, non-neutral pitch must preserve
 duration. Neutral pitch uses the BPM-only offline cache without pitch-cache
 allocation. All warp-enabled samples, including non-looping ones, may use the
 lazy pitched cache below.
+
+## Sample Trim
+
+The sample trim on `SAMPLE` stores normalized per-group handles against the
+displayed representative sound. The start handle maps proportionally onto each
+sound's length. The end handle removes the representative's excluded duration
+from every sound's own end, preserving differences in their original lengths.
+Each voice starts with these values at note-on. Direct source playback starts at
+the resolved first frame, interpolates no farther than the last included frame,
+and stops at the exclusive end. Key-held loops wrap to the selected start.
+Offline warp caches remain full-length; their playback bounds scale the end
+duration by each cache's time ratio. Live Rubber Band playback feeds only
+original frames inside the range and loops from its start. Trimming leaves the
+original audio, transient metadata, and warp caches unchanged. Trimmed playback uses
+up to 2 ms gain ramps at both boundaries, limited to half the selected range,
+to soften cuts and loop seams. While a loop note is held, a start edit is queued
+for the next repeat. An end edit changes the current pass if its new boundary is
+ahead of the voice's playback position; an end moved behind the position waits
+until the next repeat. Each voice resolves its next range against its own source
+length, including direct, cached and live warp playback. Live Rubber Band may
+have already buffered source frames ahead of the audible position, so an end
+edit on that fallback can be heard later than the boundary selected in the UI.
+For one-shots and
+released notes, trim changes still affect subsequent hits. Short live-warp
+loops continue feeding across callbacks with a bounded feed count so a tiny
+range cannot cause unbounded work in one render call.
+
+The SAMPLE tab also supplies per-group Attack and Release in milliseconds.
+Each voice latches them at note start. `SampleEnvelope` applies linear fades
+in original source time from the trimmed start and toward the trimmed end,
+including one-shot playback and each loop pass. Each duration clamps to that
+variation's selected region; overlapping fades use the lower gain. The waveform
+uses the same duration resolver. Offline caches map their positions through the
+cache time ratio, and live warp uses its original-source cursor. Half-frame
+sampling keeps one-frame regions bounded. The existing 2 ms trim declick ramp
+still multiplies this envelope.
+ADSR uses zero attack to avoid a duplicate fade and retains the selected Release
+for key-held MIDI note-off. One-shots continue ignoring MIDI note-off but now
+fade at their trimmed end. Live warp drains final output before finishing;
+feeding its final input no longer starts an early ADSR release.
 
 ## One-Shot Playback
 
@@ -663,16 +719,16 @@ performance limits and existing plugin-wide blockers.
 - Plugin construction schedules a startup pass over every `warp=true` sound,
   including all velocity layers, variations, and non-looping sounds. Successful
   plugin-state restore requests a fresh pass after publishing restored pitch and
-  tempo-sync values. No rendered buffers are stored in plugin state or on disk.
+  per-group target BPM values. No rendered buffers are stored in plugin state or on disk.
 - Startup preparation waits for a valid host BPM from an audio callback after
-  construction/restore, then the normal 120 ms tempo debounce. With tempo sync
-  enabled it prepares each sound's current `(BPM, pitch)` cache while transport
+  construction/restore, then the normal 120 ms tempo debounce. It prepares each
+  pitch-preserving sound's current `(target BPM, pitch)` cache while transport
   is stopped as well as running. Neutral pitch prepares the BPM-only cache;
   non-neutral pitch prepares the pitched cache. Exact ready caches are reused.
 - Recent-five and playback-demand work has priority, including during its
   debounce. Startup work comes next, followed by the existing BPM-only transport
   prewarm. Each pass runs sequentially on the warp worker and checks current
-  tempo, pitch, restore generation, enable state, and urgent requests between
+  target tempo, pitch, restore generation, mode, and urgent requests between
   chunks. A failed key is skipped for that pass rather than retried indefinitely.
 - Hosts that do not process audio or supply BPM while stopped cannot start this
   pass until valid timing arrives. A plugin without host timing keeps its existing
@@ -681,8 +737,8 @@ performance limits and existing plugin-wide blockers.
   retain the existing recent-five/demand policy; another state restore restarts
   the full pass.
 - Key: `(quantizedBpm, quantizedPitchRatio)`; pitch is quantized to `0.01` semitone
-  before lookup/build. Available whenever `warp=true` and tempo sync is enabled,
-  independently of `loop`.
+  before lookup/build. Available whenever `warp=true` and pitch preservation is
+  selected; non-looping warp sounds retain pitch preservation.
 - The worker remembers the five most recently played distinct warp-enabled sound
   variants for the lifetime of the plugin instance. On a stable BPM or per-sample
   pitch change, it prepares their current caches sequentially, most recent first.

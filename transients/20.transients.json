@@ -3,6 +3,7 @@
   "sampleRate": 48000,
   "lengthSec": 2.626,
   "warp": true,
+  "bpm": 153,
   "transients": [
     0.0,
     0.29633333333333333,

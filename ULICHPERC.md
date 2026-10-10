@@ -64,6 +64,10 @@ when behavior changes.
   an allocation-free SPSC handoff to the editor.
 - `Source/UI/SampleEqualiserEditor.cpp`: four draggable EQ dots, response curve
   and message-thread stereo spectrum FFT.
+- `Source/UI/SampleWaveformEditor.cpp`: selected-group waveform and sample trim
+  and fade gestures, using stereo summaries prepared by `PercussionSound` during loading.
+- `Source/Playback/SampleEnvelope.h`: bounded source-time attack/release fades
+  shared by original, cached and live-warp playback and waveform handles.
 - `Source/Effects/OttProcessor.cpp`: global three-band upward/downward
   compression after Rzhavchina, with a single OTT amount control.
 - `Source/Playback/BackgroundNoisePlayer.cpp`: embedded noise loading and

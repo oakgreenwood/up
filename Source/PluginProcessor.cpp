@@ -54,7 +54,6 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     noiseStartParam = parameters.getRawParameterValue(PluginParameters::noiseStartId);
     noiseEndParam = parameters.getRawParameterValue(PluginParameters::noiseEndId);
     sustainShortenParam = parameters.getRawParameterValue(PluginParameters::sustainShortenId);
-    warpParamRaw = parameters.getRawParameterValue(PluginParameters::warpEnabledId);
 
     sampler.clearVoices();
     addPercussionVoices();
@@ -83,6 +82,7 @@ void AudioPluginAudioProcessor::addPercussionVoices()
         v->setHostBpmParam(hostTempo.getBpmAtomic());
         v->setHostBpmMovingParam(hostTempo.getMovingAtomic());
         v->setSampleSpecificCache(&sampleSpecificCache);
+        v->setPlayheadSequenceCounter(&samplePlayheadSequenceCounter);
         sampler.addVoice(v);
     }
 }
@@ -98,6 +98,7 @@ void AudioPluginAudioProcessor::updateVoiceSharedState()
             v->setHostBpmParam(hostTempo.getBpmAtomic());
             v->setHostBpmMovingParam(hostTempo.getMovingAtomic());
             v->setSampleSpecificCache(&sampleSpecificCache);
+            v->setPlayheadSequenceCounter(&samplePlayheadSequenceCounter);
             v->setSampleSpectrum(&sampleSpectrum);
             v->setNoiseSidechain(&noiseSidechain);
             v->setWarpCachePrewarmer(warpCachePrewarmer.get());
@@ -108,6 +109,89 @@ void AudioPluginAudioProcessor::updateVoiceSharedState()
 const std::vector<PercussionSampleLibrary::SampleGroupInfo>& AudioPluginAudioProcessor::getSampleGroups() const noexcept
 {
     return sampleGroups;
+}
+
+const PercussionSound* AudioPluginAudioProcessor::getRepresentativeSampleSound(int groupIndex) const noexcept
+{
+    if (groupIndex < 0 || groupIndex >= static_cast<int>(sampleGroups.size()))
+        return nullptr;
+
+    const int note = sampleGroups[(size_t) groupIndex].midiNote;
+    const PercussionSound* representative = nullptr;
+    int closestVelocity = 128;
+    for (int i = 0; i < sampler.getNumSounds(); ++i)
+        if (const auto* sound = dynamic_cast<const PercussionSound*>(sampler.getSound(i).get()))
+            if (sound->getMidiRootNote() == note)
+            {
+                // MIDI velocity 64 selects the central layer (the upper of
+                // two middle layers). Prefer its first numbered variation.
+                const int distance = juce::jmax(sound->getVelocityMin() - 64,
+                                                64 - sound->getVelocityMax(), 0);
+                if (representative == nullptr || distance < closestVelocity
+                    || (distance == closestVelocity
+                        && sound->getVariationIndex() < representative->getVariationIndex()))
+                {
+                    representative = sound;
+                    closestVelocity = distance;
+                }
+            }
+
+    return representative;
+}
+
+const PercussionSound::Waveform* AudioPluginAudioProcessor::getSampleWaveform(int groupIndex) const noexcept
+{
+    const auto* sound = getRepresentativeSampleSound(groupIndex);
+    return sound != nullptr ? &sound->getWaveform() : nullptr;
+}
+
+const SampleMetadata* AudioPluginAudioProcessor::getSampleMetadata(int groupIndex) const noexcept
+{
+    const auto* sound = getRepresentativeSampleSound(groupIndex);
+    return sound != nullptr ? sound->metadata.get() : nullptr;
+}
+
+float AudioPluginAudioProcessor::getSamplePlayheadProgress(int groupIndex) const noexcept
+{
+    if (samplePlaybackBypassed.load(std::memory_order_relaxed)
+        || groupIndex < 0 || groupIndex >= static_cast<int>(sampleGroups.size()))
+        return -1.0f;
+
+    const auto selectedNote = static_cast<uint64_t>(sampleGroups[(size_t) groupIndex].midiNote + 1);
+    uint64_t latestSequence = 0;
+    uint64_t latestPosition = 0;
+    for (int i = 0; i < sampler.getNumVoices(); ++i)
+        if (const auto* voice = dynamic_cast<const PercussionVoice*>(sampler.getVoice(i)))
+        {
+            const uint64_t snapshot = voice->getPlayheadSnapshot();
+            if (((snapshot >> 16) & 0xffULL) != selectedNote)
+                continue;
+            const uint64_t sequence = snapshot >> 24;
+            if (sequence >= latestSequence)
+            {
+                latestSequence = sequence;
+                latestPosition = snapshot & 0xffffULL;
+            }
+        }
+    return latestSequence != 0 ? static_cast<float>(latestPosition / 65535.0) : -1.0f;
+}
+
+bool AudioPluginAudioProcessor::isSampleGroupWarpEnabled(int groupIndex) const noexcept
+{
+    const auto* sound = getRepresentativeSampleSound(groupIndex);
+    return sound != nullptr && sound->isWarpEnabled();
+}
+
+bool AudioPluginAudioProcessor::isSampleGroupWarpMarked(int groupIndex) const noexcept
+{
+    const auto* sound = getRepresentativeSampleSound(groupIndex);
+    return sound != nullptr && sound->metadata != nullptr && sound->metadata->warp;
+}
+
+double AudioPluginAudioProcessor::getSampleGroupOriginalBpm(int groupIndex) const noexcept
+{
+    const auto* sound = getRepresentativeSampleSound(groupIndex);
+    return sound != nullptr && sound->isWarpEnabled() ? sound->getOriginalBpm() : 0.0;
 }
 
 int AudioPluginAudioProcessor::getSelectedSampleGroupIndex() const noexcept
@@ -190,7 +274,8 @@ bool AudioPluginAudioProcessor::applySampleSpecificParameterToAll(const juce::St
 
     const auto* definition = PluginParameters::findSampleSpecificParameter(parameterId);
     auto* parameter = parameters.getParameter(parameterId);
-    if (definition == nullptr || parameter == nullptr || sampleGroups.empty() || !std::isfinite(value))
+    if (definition == nullptr || !definition->includeInApplyToAll || parameter == nullptr
+        || sampleGroups.empty() || !std::isfinite(value))
         return false;
 
     // Snapshot every member before publication: multi-parameter effects copy
@@ -278,6 +363,14 @@ void AudioPluginAudioProcessor::rebuildSampleSpecificCache()
     for (int groupIndex = 0; groupIndex < static_cast<int>(sampleGroups.size()); ++groupIndex)
     {
         const auto& sampleGroup = sampleGroups[(size_t) groupIndex];
+        if (const auto* waveform = getSampleWaveform(groupIndex))
+            if (std::isfinite(waveform->sampleRate) && waveform->sampleRate > 0.0)
+            {
+                const double duration = waveform->samples / waveform->sampleRate;
+                if (std::isfinite(duration) && duration <= std::numeric_limits<float>::max())
+                    sampleSpecificCache.setTrimReferenceDurationForMidiNote(
+                        sampleGroup.midiNote, static_cast<float>(duration));
+            }
         for (const auto& definition : PluginParameters::sampleSpecificParameters)
             if (auto* parameter = parameters.getParameter(definition.id))
                 definition.writeCache(sampleSpecificCache, sampleGroup.midiNote,
@@ -332,6 +425,7 @@ void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
 
 void AudioPluginAudioProcessor::releaseResources()
 {
+    samplePlaybackBypassed.store(true, std::memory_order_relaxed);
     rzhavProcessor.reset();
     ottProcessor.reset();
     backgroundNoise.reset();
@@ -360,17 +454,14 @@ bool AudioPluginAudioProcessor::isBusesLayoutSupported(const BusesLayout& layout
 void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                              juce::MidiBuffer& midiMessages)
 {
+    samplePlaybackBypassed.store(false, std::memory_order_relaxed);
     juce::ScopedNoDenormals noDenormals;
     const double nowSec = juce::Time::getMillisecondCounterHiRes() * 0.001;
     const auto tempo = hostTempo.update(getPlayHead(), nowSec);
 
     buffer.clear();
 
-    if (warpParamRaw != nullptr)
-        warpEnabledAtomic.store(warpParamRaw->load(std::memory_order_relaxed) >= 0.5f,
-                                std::memory_order_relaxed);
-
-    const bool warpEnabledNow = warpEnabledAtomic.load(std::memory_order_relaxed);
+    const bool warpEnabledNow = true;
     if (warpCachePrewarmer != nullptr
         && warpCachePrewarmer->update(warpEnabledNow, tempo.transportRunning, tempo.hostBpmAvailable))
         hostTempo.resetMotion();
@@ -465,6 +556,7 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 void AudioPluginAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer,
                                                     juce::MidiBuffer&)
 {
+    samplePlaybackBypassed.store(true, std::memory_order_relaxed);
     // This instrument has no input to delay/pass through. Keep bypass silent
     // without JUCE's default assertion that a bypassed processor has zero latency.
     buffer.clear();
@@ -656,11 +748,6 @@ void AudioPluginAudioProcessor::setStateInformation(const void* data, int sizeIn
             rebuildSampleSpecificCache();
             synchroniseSelectedSampleParameters();
 
-            if (warpParamRaw != nullptr)
-            {
-                const bool restoredWarpEnabled = warpParamRaw->load(std::memory_order_relaxed) >= 0.5f;
-                warpEnabledAtomic.store(restoredWarpEnabled, std::memory_order_relaxed);
-            }
             if (warpCachePrewarmer != nullptr)
                 warpCachePrewarmer->requestStartupPreparation();
         }

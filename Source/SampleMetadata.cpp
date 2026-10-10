@@ -1,4 +1,5 @@
 #include "SampleMetadata.h"
+#include <cmath>
 
 namespace
 {
@@ -171,6 +172,12 @@ std::unique_ptr<SampleMetadata> loadMetadataForResource(const juce::String& wavR
     meta->loop = obj.hasProperty("loop")
                    ? (bool) obj.getProperty("loop")
                    : false;
+    if (obj.hasProperty("bpm"))
+    {
+        const double bpm = static_cast<double>(obj.getProperty("bpm"));
+        if (std::isfinite(bpm) && bpm >= 1.0 && bpm <= 300.0)
+            meta->originalBpm = bpm;
+    }
 
     meta->ignoreTransientShaper = obj.hasProperty("ignoreTransientShaper")
                                       ? (bool) obj.getProperty("ignoreTransientShaper")

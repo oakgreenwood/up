@@ -19,6 +19,7 @@ struct SampleMetadata
     bool hasTransientJson = false;
     bool warp = false;
     bool loop = false;
+    double originalBpm = 0.0; // 0 when the JSON does not supply a BPM.
     bool ignoreTransientShaper = false;
     std::vector<double> transients;
 

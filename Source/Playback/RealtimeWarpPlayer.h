@@ -17,6 +17,7 @@ public:
     struct Result
     {
         bool finished = false;
+        bool wrapped = false;
     };
 
     // Call only during preparation, with rendering stopped. Prepares engines for
@@ -24,6 +25,8 @@ public:
     bool prepare(double playbackSampleRate, int channelCount, int maxExpectedBlockSize = 4096);
     bool start(int sourceStartSample,
                double sourceStartTimeSec,
+               int regionStartSample,
+               int regionEndSample,
                double timeRatio,
                double activeSourceSampleRate,
                double playbackSampleRate,
@@ -33,6 +36,8 @@ public:
     void reset();
     bool isReady() const noexcept { return stretcher != nullptr; }
     double getCurrentSourceTimeSec() const noexcept { return outputTimeSec; }
+    int getFedSourceFrame() const noexcept { return sourcePosition; }
+    void setLoopTrim(int nextStart, int nextEnd, int currentEnd) noexcept;
 
     Result render(juce::AudioBuffer<float>& outputBuffer,
                   int startSample,
@@ -44,6 +49,8 @@ public:
                   double hostBpm,
                   bool loopWhileHeld,
                   juce::ADSR& adsr,
+                  double attackSeconds,
+                  double releaseSeconds,
                   float velocityGain,
                   juce::SmoothedValue<float>& sampleGain,
                   float punchAmount,
@@ -83,6 +90,10 @@ private:
     std::array<float*, 2> outputPtrs {};
 
     int sourcePosition = 0;
+    int regionStart = 0;
+    int regionEnd = 0;
+    int nextRegionStart = 0;
+    int nextRegionEnd = 0;
     bool ended = false;
     double currentTimeRatio = 1.0;
     double currentPitchScaleMultiplier = 1.0;

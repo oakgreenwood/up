@@ -1,6 +1,7 @@
 #include "SamplePlaybackRenderer.h"
 
 #include "PunchEnvelope.h"
+#include "SampleEnvelope.h"
 
 #include <cmath>
 
@@ -42,6 +43,10 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
         return result;
     }
 
+    int regionStart = juce::jlimit(0, sourceNumSamples - 1, state.regionStart);
+    int regionEnd = juce::jlimit(regionStart + 1, sourceNumSamples, state.regionEnd);
+    state.sourceSamplePosition = juce::jmax(state.sourceSamplePosition, (double) regionStart);
+
     const float* srcL = source.getReadPointer(0);
     const float* srcR = (sourceNumChans > 1) ? source.getReadPointer(1) : nullptr;
 
@@ -50,6 +55,24 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
     const double activeSourceSampleRate = juce::jmax(1e-9, state.activeSourceSampleRate);
     const double outputSampleRate = juce::jmax(1.0, playbackSampleRate);
     const double sourceFramesPerOutputSample = juce::jmax(1e-9, state.pitchRatio);
+    const double originalFramesPerSecond = activeSourceSampleRate
+        * (state.usingWarpCache ? juce::jmax(1e-9, state.currentTimeRatio) : 1.0);
+    auto envelope = SampleEnvelope::resolve(
+        (regionEnd - regionStart) / originalFramesPerSecond,
+        state.attackSeconds, state.releaseSeconds);
+    bool trimmed = regionStart > 0 || regionEnd < sourceNumSamples;
+    double trimFadeFrames = juce::jmin(0.002 * activeSourceSampleRate,
+                                      0.5 * (regionEnd - regionStart));
+    const auto getTrimGain = [&]() noexcept
+    {
+        const float envelopeGain = envelope.gain(
+            (state.sourceSamplePosition - regionStart + 0.5) / originalFramesPerSecond);
+        if (!trimmed || trimFadeFrames <= 0.0)
+            return envelopeGain;
+        const double fromStart = (state.sourceSamplePosition - regionStart + 0.5) / trimFadeFrames;
+        const double toEnd = (regionEnd - state.sourceSamplePosition - 0.5) / trimFadeFrames;
+        return envelopeGain * static_cast<float>(juce::jlimit(0.0, 1.0, juce::jmin(fromStart, toEnd)));
+    };
     const double unwarpedPunchTimeRatio = activeSourceSampleRate
                                         / (sourceFramesPerOutputSample * outputSampleRate);
     const double punchTimeRatio = state.usingWarpCache ? state.currentTimeRatio
@@ -73,12 +96,27 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
 
     auto handleSourceEnd = [&]() -> bool
     {
-        if (state.sourceSamplePosition < (double) sourceNumSamples)
+        if (state.sourceSamplePosition < (double) regionEnd)
             return false;
 
         if (loopWhileHeld)
         {
-            state.sourceSamplePosition = std::fmod(state.sourceSamplePosition, (double) sourceNumSamples);
+            const double overrun = state.sourceSamplePosition - regionEnd;
+            regionStart = juce::jlimit(0, sourceNumSamples - 1, state.nextRegionStart);
+            regionEnd = juce::jlimit(regionStart + 1, sourceNumSamples, state.nextRegionEnd);
+            state.regionStart = regionStart;
+            state.regionEnd = regionEnd;
+            envelope = SampleEnvelope::resolve(
+                (regionEnd - regionStart) / originalFramesPerSecond,
+                state.attackSeconds, state.releaseSeconds);
+            trimmed = regionStart > 0 || regionEnd < sourceNumSamples;
+            trimFadeFrames = juce::jmin(0.002 * activeSourceSampleRate,
+                                       0.5 * (regionEnd - regionStart));
+            const double wrapped = regionStart + std::fmod(
+                overrun, (double) (regionEnd - regionStart));
+            state.sourceSamplePosition = juce::jmin(wrapped,
+                std::nextafter((double) regionEnd, (double) regionStart));
+            result.wrapped = true;
             sustainShaper.resetPosition();
             noiseTrigger.restartLoop();
             return false;
@@ -101,7 +139,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
                 break;
 
             const int pos = (int) state.sourceSamplePosition;
-            const int next = juce::jmin(pos + 1, sourceNumSamples - 1);
+            const int next = juce::jmin(pos + 1, regionEnd - 1);
 
             const float frac = (float) (state.sourceSamplePosition - (double) pos);
 
@@ -118,7 +156,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
             }
 
             const float env = adsr.getNextSample();
-            const float gain = env * velocityGain * sampleGain.getNextValue();
+            const float gain = env * velocityGain * sampleGain.getNextValue() * getTrimGain();
 
             noiseHits[i] = noiseTrigger.advance(getOriginalSourceTimeSec(), gain);
 
@@ -167,7 +205,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
             state.sourceSamplePosition += state.pitchRatio;
         }
 
-        result.finished = result.finished || (!loopWhileHeld && state.sourceSamplePosition >= sourceNumSamples)
+        result.finished = result.finished || (!loopWhileHeld && state.sourceSamplePosition >= regionEnd)
                                           || !adsr.isActive();
         return result;
     }
@@ -178,7 +216,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
             break;
 
         const int pos = (int) state.sourceSamplePosition;
-        const int next = juce::jmin(pos + 1, sourceNumSamples - 1);
+        const int next = juce::jmin(pos + 1, regionEnd - 1);
 
         const float frac = (float) (state.sourceSamplePosition - (double) pos);
 
@@ -195,7 +233,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
         }
 
         const float env = adsr.getNextSample();
-        const float gain = env * velocityGain * sampleGain.getNextValue();
+        const float gain = env * velocityGain * sampleGain.getNextValue() * getTrimGain();
         noiseHits[i] = noiseTrigger.advance(getOriginalSourceTimeSec(), gain);
 
         float sampleL = inL * gain;
@@ -242,7 +280,7 @@ SamplePlaybackRenderer::Result SamplePlaybackRenderer::render(juce::AudioBuffer<
         state.sourceSamplePosition += state.pitchRatio;
     }
 
-    result.finished = result.finished || (!loopWhileHeld && state.sourceSamplePosition >= sourceNumSamples)
+    result.finished = result.finished || (!loopWhileHeld && state.sourceSamplePosition >= regionEnd)
                                       || !adsr.isActive();
     return result;
 }

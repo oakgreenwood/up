@@ -1,6 +1,7 @@
 #include "RealtimeWarpPlayer.h"
 
 #include "PunchEnvelope.h"
+#include "SampleEnvelope.h"
 
 #include <cmath>
 #include <limits>
@@ -54,6 +55,8 @@ bool RealtimeWarpPlayer::prepare(double playbackSampleRate, int channelCount, in
 
 bool RealtimeWarpPlayer::start(int sourceStartSample,
                                double sourceStartTimeSec,
+                               int regionStartSample,
+                               int regionEndSample,
                                double timeRatio,
                                double activeSourceSampleRate,
                                double playbackSampleRate,
@@ -66,13 +69,18 @@ bool RealtimeWarpPlayer::start(int sourceStartSample,
         || playbackSampleRate < 1.0
         || std::floor(playbackSampleRate) != static_cast<double>(stretcherSampleRate)
         || inputBuffer.getNumChannels() < channels || outputScratch.getNumChannels() < channels
-        || inputBuffer.getNumSamples() <= 0 || outputScratch.getNumSamples() <= 0)
+        || inputBuffer.getNumSamples() <= 0 || outputScratch.getNumSamples() <= 0
+        || regionStartSample < 0 || regionEndSample <= regionStartSample)
         return false;
 
     stretcher = prepared;
     stretcherChannels = channels;
     stretcher->reset();
-    sourcePosition = juce::jmax(0, sourceStartSample);
+    regionStart = regionStartSample;
+    regionEnd = regionEndSample;
+    nextRegionStart = regionStart;
+    nextRegionEnd = regionEnd;
+    sourcePosition = juce::jlimit(regionStart, regionEnd - 1, sourceStartSample);
     ended = false;
     outputTimeSec = juce::jmax(0.0, sourceStartTimeSec);
     setPitchScaleMultiplier(pitchScaleMultiplier);
@@ -86,10 +94,21 @@ void RealtimeWarpPlayer::reset()
         stretcher->reset();
 
     sourcePosition = 0;
+    regionStart = 0;
+    regionEnd = 0;
+    nextRegionStart = 0;
+    nextRegionEnd = 0;
     ended = false;
     currentTimeRatio = 1.0;
     currentPitchScaleMultiplier = 1.0;
     outputTimeSec = 0.0;
+}
+
+void RealtimeWarpPlayer::setLoopTrim(int nextStart, int nextEnd, int currentEnd) noexcept
+{
+    nextRegionStart = nextStart;
+    nextRegionEnd = juce::jmax(nextStart + 1, nextEnd);
+    regionEnd = juce::jmax(regionStart + 1, currentEnd);
 }
 
 RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& outputBuffer,
@@ -102,6 +121,8 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                                                        double hostBpm,
                                                        bool loopWhileHeld,
                                                        juce::ADSR& adsr,
+                                                       double attackSeconds,
+                                                       double releaseSeconds,
                                                        float velocityGain,
                                                        juce::SmoothedValue<float>& sampleGain,
                                                        float punchAmount,
@@ -129,6 +150,13 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
         return result;
     }
 
+    int boundedEnd = juce::jlimit(1, sourceNumSamples, regionEnd);
+    if (regionStart < 0 || regionStart >= boundedEnd || sourcePosition < regionStart)
+    {
+        result.finished = true;
+        return result;
+    }
+
     const int channels = juce::jlimit(1, 2, sourceNumChans);
     if (channels != stretcherChannels)
     {
@@ -136,7 +164,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
         return result;
     }
 
-    const double ratio = PercussionSound::warpTimeRatioForHost(sound.getOriginalBpm(), hostBpm);
+    const double ratio = sound.warpTimeRatioForTarget(hostBpm);
     const double oldPitchScaleMultiplier = currentPitchScaleMultiplier;
     setPitchScaleMultiplier(pitchScaleMultiplier);
 
@@ -150,8 +178,36 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
     const bool doPunch = punchAmount > 0.0f;
     const double playbackSr = juce::jmax(1.0, playbackSampleRate);
     const double sourceStepSec = (1.0 / playbackSr) / juce::jmax(1e-9, currentTimeRatio);
+    bool trimmed = regionStart > 0 || boundedEnd < sourceNumSamples;
+    const double safeSourceRate = juce::jmax(1.0, activeSourceSampleRate);
+    double regionStartSec = regionStart / safeSourceRate;
+    double regionEndSec = boundedEnd / safeSourceRate;
+    const double halfSourceFrameSec = 0.5 / safeSourceRate;
+    double trimFadeSec = juce::jmin(0.002, 0.5 * (regionEndSec - regionStartSec));
+    auto envelope = SampleEnvelope::resolve(regionEndSec - regionStartSec,
+                                            attackSeconds, releaseSeconds);
+    const auto refreshLoopBounds = [&]() noexcept
+    {
+        boundedEnd = juce::jlimit(1, sourceNumSamples, regionEnd);
+        trimmed = regionStart > 0 || boundedEnd < sourceNumSamples;
+        regionStartSec = regionStart / safeSourceRate;
+        regionEndSec = boundedEnd / safeSourceRate;
+        trimFadeSec = juce::jmin(0.002, 0.5 * (regionEndSec - regionStartSec));
+        envelope = SampleEnvelope::resolve(regionEndSec - regionStartSec,
+                                           attackSeconds, releaseSeconds);
+    };
+    const auto getTrimGain = [&]() noexcept
+    {
+        const float envelopeGain = envelope.gain(outputTimeSec - regionStartSec + halfSourceFrameSec);
+        if (!trimmed || trimFadeSec <= 0.0)
+            return envelopeGain;
+        const double fromStart = (outputTimeSec - regionStartSec + halfSourceFrameSec) / trimFadeSec;
+        const double toEnd = (regionEndSec - outputTimeSec - halfSourceFrameSec) / trimFadeSec;
+        return envelopeGain * static_cast<float>(juce::jlimit(0.0, 1.0, juce::jmin(fromStart, toEnd)));
+    };
 
     int produced = 0;
+    int sourceFeeds = 0;
 
     while (produced < numSamples)
     {
@@ -161,19 +217,24 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
         {
             if (!ended)
             {
-                const int remaining = sourceNumSamples - sourcePosition;
+                // A very short trimmed loop may need many source wraps before
+                // Rubber Band yields output. Continue across callbacks.
+                if (++sourceFeeds > 8)
+                    return result;
+                const int remaining = boundedEnd - sourcePosition;
                 if (remaining <= 0)
                 {
                     if (loopWhileHeld)
                     {
                         resetForLoop(activeSourceSampleRate, playbackSampleRate, sustainShaper);
+                        refreshLoopBounds();
+                        result.wrapped = true;
                         noiseTrigger.restartLoop();
                         continue;
                     }
 
                     stretcher->process(nullptr, 0, true);
                     ended = true;
-                    adsr.noteOff();
                     continue;
                 }
 
@@ -196,38 +257,28 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
                     inputPtrs[1] = input1;
 
                     stretcher->process(inputPtrs.data(), (size_t) toFeed, isLastBlock);
-                    sourcePosition = juce::jmin(sourcePosition + toFeed, sourceNumSamples);
+                    sourcePosition = juce::jmin(sourcePosition + toFeed, boundedEnd);
                     if (isLastBlock)
-                    {
                         ended = true;
-                        adsr.noteOff();
-                    }
                     continue;
                 }
 
                 if (loopWhileHeld)
                 {
                     resetForLoop(activeSourceSampleRate, playbackSampleRate, sustainShaper);
+                    refreshLoopBounds();
+                    result.wrapped = true;
                     noiseTrigger.restartLoop();
                     continue;
                 }
 
                 stretcher->process(nullptr, 0, true);
                 ended = true;
-                adsr.noteOff();
                 continue;
             }
 
-            for (; produced < numSamples; ++produced)
-            {
-                adsr.getNextSample();
-                if (!adsr.isActive())
-                {
-                    result.finished = true;
-                    return result;
-                }
-            }
-
+            // Final input is drained; the source-time envelope has reached its end.
+            result.finished = true;
             return result;
         }
 
@@ -246,7 +297,7 @@ RealtimeWarpPlayer::Result RealtimeWarpPlayer::render(juce::AudioBuffer<float>& 
         for (int i = 0; i < retrieved; ++i)
         {
             const float env = adsr.getNextSample();
-            const float gain = env * velocityGain * sampleGain.getNextValue();
+            const float gain = env * velocityGain * sampleGain.getNextValue() * getTrimGain();
 
             if (!adsr.isActive())
             {
@@ -346,14 +397,16 @@ void RealtimeWarpPlayer::resetForLoop(double activeSourceSampleRate,
                                       double playbackSampleRate,
                                       SustainTailShaper& sustainShaper)
 {
-    if (stretcher != nullptr)
+    if (stretcher != nullptr && regionEnd - regionStart >= 4096)
     {
         stretcher->reset();
         setRubberBandRates(currentTimeRatio, activeSourceSampleRate, playbackSampleRate);
     }
 
-    sourcePosition = 0;
+    regionStart = nextRegionStart;
+    regionEnd = nextRegionEnd;
+    sourcePosition = regionStart;
     ended = false;
-    outputTimeSec = 0.0;
+    outputTimeSec = regionStart / juce::jmax(1.0, activeSourceSampleRate);
     sustainShaper.resetPosition();
 }

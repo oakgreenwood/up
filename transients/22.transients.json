@@ -4,6 +4,7 @@
   "lengthSec": 1.5686458333333333,
   "warp": true,
   "loop": true,
+  "bpm": 153,
   "transients": [
     0.01,
     0.188,

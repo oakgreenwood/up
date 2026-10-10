@@ -14,7 +14,8 @@ black heading/border, #6B6D68 uppercase captions, black waveform/text and
 Inside the frame, controls run vertically: SOURCE dropdown, waveform, TRIGGER
 dropdown, VOLUME, then PUMP/FOLLOW. A single Release knob sits centered along
 the bottom with an editable integer-ms readout. Attack and Rise controls have
-been removed. The other global controls remain to its left.
+been removed. The other global controls remain to its left. The former global
+Tempo sync button is removed; loop tempo and playback mode are in the SAMPLE tab.
 The panel is two-thirds of its former width (399 px in the 900 px editor),
 with its left edge and height unchanged. Dropdowns, waveform and slider tracks
 use the narrower bounds; the centered Release knob remains 47x47 px, preserving
@@ -112,8 +113,92 @@ Sample-specific controls are hidden from the main editor until the centred
 `EDIT SAMPLES` button above the sample-group sticks is clicked. The modal uses
 an opaque `#D9D9D9` background, spans the editor width inside the existing
 12-pixel padding, is anchored to the bottom of that padded area, and occupies
-70% of the editor height. It contains Gain, Punch, Pitch, Formant, Mono,
-Panorama, the sample equaliser, and Apply to All.
+70% of the editor height. Two tabs, `EFFECTS` and `SAMPLE`, sit on one row
+centred at the top. `EFFECTS` is initially selected and contains Pitch, Formant, Mono,
+Punch, the sample equaliser, and Apply to All. `SAMPLE` contains Gain, Panorama,
+and a sample waveform with start/end trim handles. A column on its right shows
+START, ATTACK, END and RELEASE in milliseconds, with grey captions and black
+editable values. Each accepts typing or keyboard arrows in 1 ms steps. START
+and END use the representative source's timeline; the waveform handles and
+fields stay synchronized. Switching tabs preserves values and the selected
+sample group. For groups whose representative sample has `warp=true`, these
+four value fields are hidden. Their trim handles remain available on the
+waveform, while the Attack/Release line handles and fade shading are hidden.
+
+For `warp=true, loop=false` groups, a `BEAT SNAP` button appears below the
+waveform. It starts off and toggles transient snapping on or off. For
+`warp=true, loop=true` groups, a `BEAT SNAP` label and snap-target dropdown
+appear instead. `OFF` is the first dropdown option; `TRANSIENTS` is selected
+by default. The button and dropdown retain separate choices across sample/tab
+changes for the current editor session. The dropdown also offers `1/4`, `1/8`,
+and `1/16` note grids,
+anchored at the source start and calculated from the representative source's
+original BPM, independent of target/project tempo. When snapping is enabled,
+small downward triangles in `#8E8B8B` appear immediately above the waveform's
+top border at the selected transient or grid points. Dragging or clicking to
+move either trim handle selects the nearest valid target, or the actual
+beginning/end of the sample for its respective handle.
+The handles stay at least one sample frame apart. Sample boundaries remain
+available even without a metadata transient or grid point there, but do not get
+triangles unless a metadata transient is present.
+Changing either control leaves existing trim values intact until edited. Snapped trims
+use the existing saved/automatable start/end parameters; the editor-only controls
+do not constrain host automation or add a saved parameter. Non-warp groups
+retain free trimming even when a snap target is selected for another group.
+
+For a sample group whose representative source has `warp=true` or `loop=true`,
+the SAMPLE tab also shows a target BPM input, TEMPO SYNC button, PRESERVE
+PITCH / SPEED + PITCH mode button, and the original source BPM in `#8E8B8B`
+text. The displayed original BPM comes from JSON when present, otherwise from
+the 153 BPM source fallback. The default target follows the project's changing
+tempo. TEMPO SYNC is fully opaque while following the project and 60% opaque
+when off; switching it off sets the target to the original source BPM, so later
+project tempo changes do not change playback speed. Switching it on resumes
+following the project. Entering a number also fixes the target for that group
+and shows the button at 60% opacity. This mode follows the existing saved
+per-group target BPM parameter (zero means synced). Samples without warp or loop
+metadata hide these controls.
+
+The `SAMPLE` waveform shows the first numbered variation from the velocity
+layer that contains MIDI velocity 64. If that layer is empty, it uses the
+nearest populated layer.
+It uses 1024 min/max bins per channel prepared while embedded samples load,
+without scanning source audio in the editor. Stereo sources have two stacked
+lanes; mono sources have one. The waveform takes about one third of the modal
+width with an approximately 3:1 plot, and the waveform/value group is centred.
+For `warp=true` groups, the waveform width is 1.6 times the ordinary width,
+with its height unchanged; it is centred by itself because the value column
+is hidden.
+The full waveform is drawn inside a black frame; the excluded parts are shaded.
+Drag either handle to set normalized
+start/end positions. Clicking elsewhere moves the nearest handle, and the
+handles stay at least one displayed sample frame apart. Changing groups,
+switching tabs, closing the modal, or hiding the editor ends a trim gesture.
+The trim applies to every velocity layer and variation in the group. The start
+handle uses each source's own length. The end handle removes the same duration
+from the end of every source, so different original lengths remain different.
+An already sounding one-shot keeps the range it had at note start. A held loop
+uses a changed start from its next repeat; it uses a changed end in the current
+pass if that end is still ahead of its playback position, or from the next
+repeat otherwise.
+
+A one-pixel `#CDD0C3` line shows playback in the SAMPLE waveform at the same
+30 Hz refresh rate as the noise playhead. For overlapping hits, it follows the
+most recently started voice still playing in the selected group. Each voice's
+position within its own trimmed region is mapped onto the displayed variation's
+trim range, so variations of different lengths still show their progress. The
+line disappears when that source finishes, the selected group is idle, or the
+plugin is bypassed.
+
+Attack and Release belong to the selected sample group. Both accept 0..2000 ms;
+Attack defaults to 0 ms and Release to 60 ms. For non-warp groups, slanted line
+handles above the plot set the attack's end and release's beginning. Drag right to lengthen
+Attack, or left to lengthen Release. Grey triangles show both source-time
+fades, anchored to the trimmed start/end; changing trim moves the fade handles
+with those boundaries. Fades clamp to the selected region's length, and may
+overlap. The same parameter gestures drive the line handles and numeric fields.
+Release now also fades the end of one-shot samples; key-held samples retain
+their note-off fade.
 
 `EDIT SAMPLES` is hidden while the modal is open. The sample-group sticks use
 the same 12-pixel left, right and bottom padding as the modal, so their lower
@@ -134,7 +219,7 @@ and saved global state. Sample selection and Apply to All do not change it.
 
 ## Sample Gain
 
-The `Gain` knob sits immediately left of Punch and Pitch, using the same image
+The `Gain` knob sits on the `SAMPLE` tab beside Panorama, using the same image
 knob style. It controls the selected sample group from -20 to +20 dB in 0.1 dB
 steps, defaults to 0 dB, and resets to 0 dB on double-click. Its editable value
 field displays values such as `+6.0 dB` and uses the same signed one-decimal
@@ -154,10 +239,9 @@ inputs' focus, commit/cancel, automation, and sample-selection behavior.
 
 ## Mono
 
-The Mono knob sits to the right of Formant, with the same image knob and editable
-percentage input as Punch. The sample-effect row is Gain, Punch, Pitch, Formant,
-Mono, Panorama. It ranges from 0% (original stereo) to 100% (summed mono), in 1% steps,
-defaults to 0%, and double-click resets it to 0%.
+The Mono knob sits to the right of Formant on `EFFECTS`, with the same image knob
+and editable percentage input as Punch. It ranges from 0% (original stereo) to
+100% (summed mono), in 1% steps, defaults to 0%, and double-click resets it to 0%.
 
 Typing `50` or `50%` commits 50%. The shared percentage validator accepts ASCII
 digits and one optional trailing `%`, rejects signs, decimals, whitespace,
@@ -170,7 +254,7 @@ Apply to All and automatic effect-dropdown selection on an actual UI edit.
 
 ## Panorama
 
-Panorama sits immediately to the right of Mono. It is sample-specific, ranges
+Panorama sits to the right of Gain on `SAMPLE`. It is sample-specific, ranges
 from -50 to +50 in one-unit steps, and defaults/resets on double-click to 0.
 The input displays `C` at zero, `1L` through `50L` on the left, and `1R` through
 `50R` on the right. Negative signed integers choose the left side; positive
@@ -243,7 +327,8 @@ The dots are its only editing controls (no arrow-key EQ editing).
 
 `APPLY TO ALL` sits below the sample-specific effects. An effect dropdown sits
 directly to its right, with no value or status text below the button. The dropdown
-lists the effects registered in `PluginParameters::sampleSpecificParameters`.
+lists the effects marked for Apply to All in
+`PluginParameters::sampleSpecificParameters`.
 Scalar effects use the parameter's host-facing name; grouped parameters use one
 shared effect entry, so EQ appears once. It starts with Gain selected. The collapsed dropdown has no border
 or background; only its selected effect name and arrow are visible.
@@ -262,7 +347,10 @@ by 0.1. Punch and Mono change by 1%, which converts to 0.01 in their stored `0..
 Panorama changes by 1, crossing from `1L` through `C` to `1R` as it increases.
 Values clamp at their parameter bounds. Arrow edits work from the knob, its value
 field, or after choosing an effect in the dropdown, and send a normal parameter
-change gesture.
+change gesture. Holding Shift with an arrow multiplies the usual value step by
+ten for focused knobs, sliders, numeric value fields (including while editing),
+and the selected effect. The same shortcut works on macOS, Windows, and Linux; other
+modifier combinations retain their normal key behavior.
 
 Edit tracking listens to APVTS parameter gestures, independently of control type.
 New effects registered in `PluginParameters::sampleSpecificParameters` therefore
@@ -306,10 +394,19 @@ Selected text remains black and has no colored selection highlight. The caret is
 hidden while typing. Units are visible before editing and restored after a value
 is committed.
 
+Every editable numeric value and rotary knob supports dragging in either
+direction: up or right increases, down or left decreases. After the pointer
+moves three pixels, the larger horizontal or vertical displacement chooses
+the axis for that drag; the axis then stays fixed until release. Numeric values
+use their linked slider's value curve and 150-pixel full-range sensitivity.
+A numeric drag sends one host change gesture, while a click still opens text
+entry. This applies to sample effects, sample timing, loop BPM, and noise
+Release. Selection changes or hiding a field end an active numeric drag.
+
 ## Formant
 
-The single Formant knob sits immediately right of Pitch; the sample-effect row
-is Gain, Punch, Pitch, Formant, Mono, Panorama. It is the former PSOLA Formant3 option, retaining
+The single Formant knob sits immediately right of Pitch on `EFFECTS`, followed
+by Mono and Punch. It is the former PSOLA Formant3 option, retaining
 its EQ/saturation coloration, -12..+12 semitone range, zero default and double-click
 reset. Its APVTS attachment supports selection refresh, automation, state and
 Apply to All. The separate LPC knob is removed. Host display and the Apply to All

@@ -36,6 +36,7 @@ void PercussionSynthesiser::registerLayeredSound(PercussionSound* sound,
     item.sound = sound;
     item.velocityGroupIndex = juce::jmax(1, velocityGroupIndex);
     item.variationIndex = juce::jmax(1, variationIndex);
+    sound->setVariationIndex(item.variationIndex);
 
     registeredByMidiNote[midiNote].push_back(item);
 }

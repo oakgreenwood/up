@@ -109,6 +109,8 @@ set(SourceFiles
         Source/UI/SampleEqualiserEditor.cpp
         Source/UI/NoiseWaveformEditor.h
         Source/UI/NoiseWaveformEditor.cpp
+        Source/UI/SampleWaveformEditor.h
+        Source/UI/SampleWaveformEditor.cpp
         Source/SampleLibrary/SampleNameParser.h
         Source/SampleLibrary/SampleNameParser.cpp
         Source/SampleLibrary/PercussionSampleLibrary.h

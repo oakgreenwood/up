@@ -2,6 +2,7 @@
 #include <rubberband/RubberBandStretcher.h>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 
@@ -38,6 +39,27 @@ PercussionSound::PercussionSound(const juce::String& soundName,
     data.setSize((int) source.numChannels, numSamples);
     source.read(&data, 0, numSamples, 0, true, true);
 
+    waveform.samples = numSamples;
+    waveform.sampleRate = sourceSampleRate;
+    waveform.channels = juce::jmin(2, data.getNumChannels());
+    if (numSamples > 0)
+        for (int frame = 0; frame < numSamples; ++frame)
+        {
+            const auto bin = static_cast<size_t>(static_cast<std::int64_t>(frame)
+                * Waveform::bins / numSamples);
+            for (int channel = 0; channel < juce::jmin(2, data.getNumChannels()); ++channel)
+            {
+                const float value = data.getSample(channel, frame);
+                if (!std::isfinite(value))
+                    continue;
+                auto& minimum = waveform.minimum[(size_t) channel][bin];
+                auto& maximum = waveform.maximum[(size_t) channel][bin];
+                minimum = juce::jmin(minimum, value);
+                maximum = juce::jmax(maximum, value);
+                waveform.peak = juce::jmax(waveform.peak, std::abs(value));
+            }
+        }
+
     lengthInSeconds = (double) numSamples / sourceSampleRate;
     attack = attackTimeSeconds;
     release = releaseTimeSeconds;
@@ -47,6 +69,8 @@ PercussionSound::PercussionSound(const juce::String& soundName,
                                        wavOriginalFilenameForMetadata);
     if (metadata == nullptr)
         metadata = std::make_unique<SampleMetadata>();
+    if (metadata->originalBpm > 0.0)
+        originalBpm = metadata->originalBpm;
 
     if (metadata->sampleRate <= 0.0)
         metadata->sampleRate = 48000.0;
@@ -65,7 +89,8 @@ PercussionSound::PercussionSound(const juce::String& soundName,
     // Always trust measured audio duration over JSON.
     metadata->lengthSec = lengthInSeconds;
 
-    warpEnabled = metadata->warp;
+    // Loop tempo controls apply whenever JSON marks a source as a loop.
+    warpEnabled = metadata->warp || metadata->loop;
 
     // Prepare onset strength off the audio thread. One-shots have one hit;
     // loop/warp sounds use their JSON onsets, independently of Punch settings.
@@ -130,20 +155,15 @@ double PercussionSound::quantizeWarpPitchRatio(double pitchRatio) noexcept
     return std::pow(2.0, quantizedSemitones / 12.0);
 }
 
-double PercussionSound::warpBaseBpmForHost(double originalBpm, double hostBpm) noexcept
+double PercussionSound::warpBaseBpmForTarget(double targetBpm) const noexcept
 {
-    const double safeOriginalBpm = juce::jmax(1.0, originalBpm);
-    const double safeHostBpm = juce::jmax(1.0, hostBpm);
-
-    // For very slow host tempos, switch to half-time anchor (153 -> 76.5)
-    // so loops speed up instead of stretching too far.
-    return (safeHostBpm <= 90.0) ? (safeOriginalBpm * 0.5) : safeOriginalBpm;
+    juce::ignoreUnused(targetBpm);
+    return juce::jmax(1.0, originalBpm);
 }
 
-double PercussionSound::warpTimeRatioForHost(double originalBpm, double hostBpm) noexcept
+double PercussionSound::warpTimeRatioForTarget(double targetBpm) const noexcept
 {
-    const double safeHostBpm = juce::jmax(1.0, hostBpm);
-    return warpBaseBpmForHost(originalBpm, safeHostBpm) / safeHostBpm;
+    return warpBaseBpmForTarget(targetBpm) / juce::jmax(1.0, targetBpm);
 }
 
 void PercussionSound::setVelocityLayerInfo(int groupIndex,
@@ -179,7 +199,7 @@ std::unique_ptr<PercussionSound::WarpedCache> PercussionSound::renderWarpedCache
     // JSON sampleRate can differ from the loaded WAV rate and would bias pitch.
     cache->sourceSampleRate = juce::jmax(1.0, sourceSampleRate);
 
-    const double timeRatio = warpTimeRatioForHost(originalBpm, hostBpm);
+    const double timeRatio = warpTimeRatioForTarget(hostBpm);
     cache->timeRatio = timeRatio;
     const double outputLength = std::round((double) srcSamples * timeRatio);
     if (!std::isfinite(outputLength) || outputLength < 1.0

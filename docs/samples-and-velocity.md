@@ -16,7 +16,11 @@ Pitch slots expand the note map before MIDI assignment:
 `midiNote = 48 + mappedNoteIndex - 1`.
 The selector uses the same map: one group per `(noteIndex, pitchIndex)`, ignoring
 velocity/variation. `1_v1_n2` and `1_v1_n3` share an item; `4_v1_n1_p1` and
-`4_v1_n1_p2` have separate items.
+`4_v1_n1_p2` have separate items. The SAMPLE tab's start/end trim belongs to
+that same group. The start maps onto each layer/variation's own length; the end
+removes the same amount of time from each source's end. Its waveform
+uses the lowest numbered variation in the velocity layer selected by MIDI
+velocity 64, or the nearest populated layer if that one is empty.
 
 `getEmbeddedSampleGroups()` shares the loader's resource-name collection and
 pitch-slot mapping to inventory numbered noise-trigger choices before APVTS is
@@ -32,6 +36,10 @@ See [noise modulation](playback-warp-and-transients.md#noise-pump--follow).
 ## Velocity Inventory And Selection
 
 Current `samples/*.wav` inventory:
+
+The warp/loop flags and optional original BPM come from each sample's transient
+JSON. Every bundled `warp=true` source—sample groups 13, 20, and 22–25—
+declares `"bpm": 153`.
 
 | Note index | MIDI note | Loaded velocity groups and variations |
 | --- | ---: | --- |

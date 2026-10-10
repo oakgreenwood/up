@@ -54,7 +54,6 @@ public:
     double getTailLengthSeconds() const override;
     juce::AudioProcessorValueTreeState parameters;
     std::atomic<float>* sustainShortenParam = nullptr;
-    std::atomic<float>* warpParamRaw = nullptr;
     std::atomic<float>* rzhavParam = nullptr;
 
     //==============================================================================
@@ -69,6 +68,14 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     const std::vector<PercussionSampleLibrary::SampleGroupInfo>& getSampleGroups() const noexcept;
+    const PercussionSound::Waveform* getSampleWaveform(int groupIndex) const noexcept;
+    // Message-thread view of immutable, processor-owned source metadata.
+    const SampleMetadata* getSampleMetadata(int groupIndex) const noexcept;
+    float getSamplePlayheadProgress(int groupIndex) const noexcept;
+    bool isSampleGroupWarpEnabled(int groupIndex) const noexcept;
+    bool isSampleGroupWarpMarked(int groupIndex) const noexcept;
+    double getSampleGroupOriginalBpm(int groupIndex) const noexcept;
+    double getProjectBpm() const noexcept { return hostTempo.getBpm(); }
     int getSelectedSampleGroupIndex() const noexcept;
     // Message-thread selection; synchronizes the host-visible parameters.
     void setSelectedSampleGroupIndex(int groupIndex);
@@ -95,6 +102,7 @@ public:
     bool applySampleSpecificParameterToAll(const juce::String& parameterId, float value);
 
 private:
+    const PercussionSound* getRepresentativeSampleSound(int groupIndex) const noexcept;
     void addPercussionVoices();
     void updateVoiceSharedState();
     void clampSelectedSampleGroupIndex() noexcept;
@@ -122,6 +130,8 @@ private:
     };
     NoiseSidechain noiseSidechain;
     SampleSpectrum sampleSpectrum;
+    std::atomic<uint64_t> samplePlayheadSequenceCounter { 0 };
+    std::atomic<bool> samplePlaybackBypassed { false };
     PercussionSynthesiser sampler;
     MidiNoteActivityState midiNoteActivity;
     std::vector<PercussionSampleLibrary::SampleGroupInfo> sampleGroups;

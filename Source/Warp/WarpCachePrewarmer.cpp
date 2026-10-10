@@ -88,6 +88,19 @@ WarpCachePrewarmer::Entry* WarpCachePrewarmer::findEntry(const PercussionSound& 
     return entry->sound == &sound ? entry : nullptr;
 }
 
+double WarpCachePrewarmer::targetBpm(const Entry& entry) const noexcept
+{
+    const float fixed = parameters.getLoopBpmForMidiNote(entry.sound->getMidiRootNote());
+    if (fixed >= 1.0f)
+        return fixed;
+    return hostBpm.load(std::memory_order_relaxed);
+}
+
+bool WarpCachePrewarmer::usesTapeMode(const Entry& entry) const noexcept
+{
+    return parameters.getLoopTapeModeForMidiNote(entry.sound->getMidiRootNote());
+}
+
 void WarpCachePrewarmer::recordPlayed(const PercussionSound& sound) noexcept
 {
     if (auto* entry = findEntry(sound))
@@ -196,8 +209,9 @@ bool WarpCachePrewarmer::render(Entry& entry, uint64_t key, RenderPurpose purpos
     const auto stillWanted = [this, &entry, key, purpose, generation]
     {
         if (threadShouldExit() || !enabled.load(std::memory_order_relaxed)
+            || usesTapeMode(entry)
             || startupGeneration.load(std::memory_order_acquire) != generation
-            || makeKey(hostBpm.load(std::memory_order_relaxed), 1.0) != makeKey(keyBpm(key), 1.0))
+            || makeKey(targetBpm(entry), 1.0) != makeKey(keyBpm(key), 1.0))
             return false;
         if (purpose == RenderPurpose::startup
             && !startupTempoReady.load(std::memory_order_acquire))
@@ -318,13 +332,15 @@ void WarpCachePrewarmer::run()
         {
             auto& entry = *owned;
             auto requested = entry.requestedKey.load(std::memory_order_acquire);
+            const auto entryBpmKey = makeKey(targetBpm(entry), 1.0);
             if (requested != 0
-                && makeKey(keyBpm(requested), 1.0) != bpmKey)
+                && (usesTapeMode(entry) || makeKey(keyBpm(requested), 1.0) != entryBpmKey))
                 entry.requestedKey.compare_exchange_strong(requested, 0,
                                                            std::memory_order_release,
                                                            std::memory_order_relaxed);
 
-            auto stamp = entry.lastPlayed.load(std::memory_order_acquire);
+            auto stamp = usesTapeMode(entry) ? uint64_t { 0 }
+                : entry.lastPlayed.load(std::memory_order_acquire);
             Entry* candidate = &entry;
             for (auto& position : recent)
                 if (stamp > position.first)
@@ -333,7 +349,7 @@ void WarpCachePrewarmer::run()
                     std::swap(candidate, position.second);
                 }
 
-            const auto pitchKey = makeKey(keyBpm(bpmKey),
+            const auto pitchKey = usesTapeMode(entry) ? 0 : makeKey(keyBpm(entryBpmKey),
                 parameters.getPitchRatioForMidiNote(entry.sound->getMidiRootNote()));
             if (pitchKey != entry.observedPitchKey)
             {
@@ -409,7 +425,7 @@ void WarpCachePrewarmer::run()
             if (!didWork && !urgentPending && !(startupPending && tempoReady)
                 && transportRunning.load(std::memory_order_relaxed))
                 for (auto& entry : entries)
-                    if (render(*entry, bpmKey, RenderPurpose::base))
+                    if (render(*entry, makeKey(targetBpm(*entry), 1.0), RenderPurpose::base))
                         break;
         }
         wait(20);
