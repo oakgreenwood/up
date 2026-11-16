@@ -57,10 +57,19 @@ namespace SampleNameParser
         int velocityGroup = 1;
         int variation = 1;
         int pitch = 1;
+        SampleDirection direction = SampleDirection::none;
 
         for (int i = firstNumericToken + 1; i < tokens.size(); ++i)
         {
             const auto t = tokens[i].trim();
+            if (t.equalsIgnoreCase("u") || t.equalsIgnoreCase("d"))
+            {
+                if (direction != SampleDirection::none || i != tokens.size() - 1)
+                    return false;
+                direction = t.equalsIgnoreCase("u") ? SampleDirection::up : SampleDirection::down;
+                continue;
+            }
+
             if (t.length() < 2)
                 return false;
 
@@ -105,6 +114,7 @@ namespace SampleNameParser
         out.velocityGroupIndex = velocityGroup;
         out.variationIndex = variation;
         out.pitchIndex = pitch;
+        out.direction = direction;
         return true;
     }
 }

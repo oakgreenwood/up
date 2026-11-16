@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "SampleMetadata.h"
+#include "SampleLibrary/SampleNameParser.h"
 #include "Playback/NoiseTrigger.h"
 
 class WarpCachePrewarmer;
@@ -69,6 +70,8 @@ public:
     int getVelocityMax() const noexcept { return velocityMax; }
     void setVariationIndex(int index) noexcept { variationIndex = index; }
     int getVariationIndex() const noexcept { return variationIndex; }
+    void setDirection(SampleDirection value) noexcept { direction = value; }
+    SampleDirection getDirection() const noexcept { return direction; }
 
     // Warp info
     bool isWarpEnabled() const noexcept { return warpEnabled; }
@@ -98,6 +101,7 @@ private:
     int midiRootNote = 60;
     int warpCacheIndex = -1;
     int variationIndex = 1;
+    SampleDirection direction = SampleDirection::none;
 
     juce::BigInteger midiNotes;
 

@@ -5,10 +5,19 @@
 
 #include <cmath>
 
+
 namespace
 {
 constexpr int editorPadding = 12;
 constexpr int uploadNoiseItemId = -1; // UI action, outside the positive source IDs.
+
+bool supportsAbletonMidiInsertion()
+{
+    const auto host = juce::PluginHostType();
+    return AbletonMidiBridgeClient::isSupportedPlatform()
+        && (host.type == juce::PluginHostType::AbletonLive11
+            || host.type == juce::PluginHostType::AbletonLiveGeneric);
+}
 
 class NoisePanelSurface final : public juce::Component
 {
@@ -615,6 +624,7 @@ void NumericValueInput::refreshValue()
 AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAudioProcessor& p)
     : AudioProcessorEditor (&p),
       processorRef (p),
+      abletonMidiInsertSupported(supportsAbletonMidiInsertion()),
       equaliserEditor(p),
       sampleWaveformEditor(p),
       noiseWaveform(p)
@@ -796,6 +806,26 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     };
     configureSampleTab(effectsTabButton);
     configureSampleTab(sampleTabButton);
+    configureSampleTab(shakeButton);
+    configureSampleTab(trackMidiButton);
+    trackMidiButton.setClickingTogglesState(true);
+    trackMidiButton.setTooltip("On: send SHAKE through ULICHPERC MIDI and listen to the DAW input. Off: play SHAKE internally.");
+    trackMidiButton.onClick = [this]
+    {
+        processorRef.setVirtualMidiInput(trackMidiButton.getToggleState() ? 1 : 0);
+        updateShakeMode();
+    };
+    configureSampleTab(midiDragButton);
+    configureSampleTab(midiInsertButton);
+    midiInsertButton.setTooltip("Add this take to this plugin's track at its original recording start; "
+                                "requires the included Ableton remote script");
+    midiInsertButton.onClick = [this] { insertRecordedMidi(); };
+    midiDragButton.setTooltip("Record shaking while the DAW is recording, then drag the latest take onto a MIDI track");
+    midiDragButton.onDrag = [this] { startRecordedMidiDrag(); };
+    shakeButton.setClickingTogglesState(true);
+    shakeButton.setTooltip("Move the cursor anywhere inside the plugin; reverse direction to shake the selected sample");
+    shakeButton.onClick = [this] { updateShakeMode(); };
+    addMouseListener(&shakeMouseListener, true);
     effectsTabButton.onClick = [this]
     {
         effectsTabSelected = true;
@@ -1154,6 +1184,14 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
+    processorRef.setShakeSampleGroup(-1);
+    processorRef.setShakeVirtualMidiActive(false);
+    removeMouseListener(&shakeMouseListener);
+    shakeButton.onClick = {};
+    trackMidiButton.onClick = {};
+    virtualMidi.release();
+    midiDragButton.onDrag = {};
+    midiInsertButton.onClick = {};
     noiseFileChooser.reset();
     equaliserEditor.endDrag();
     sampleWaveformEditor.endDrag();
@@ -1418,6 +1456,7 @@ void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBe
 
 void AudioPluginAudioProcessorEditor::updateSampleEditorTabVisibility()
 {
+    updateShakeMode();
     const bool showEffects = sampleEffectsModalOpen && effectsTabSelected;
     const bool showSample = sampleEffectsModalOpen && !effectsTabSelected;
     if (!showEffects)
@@ -1543,6 +1582,8 @@ void AudioPluginAudioProcessorEditor::visibilityChanged()
 {
     if (!isShowing())
     {
+        shakeButton.setToggleState(false, juce::dontSendNotification);
+        updateShakeMode();
         sampleWaveformEditor.endDrag();
         noiseFileDragActive = false;
         repaint();
@@ -1621,6 +1662,9 @@ void AudioPluginAudioProcessorEditor::rebuildSampleGroupActivityMap()
         const int midiNote = sampleGroups[(size_t) groupIndex].midiNote;
         if (midiNote >= 0 && midiNote < AudioPluginAudioProcessor::midiNoteActivityCount)
             sampleGroupIndexByMidiNote[(size_t) midiNote] = groupIndex;
+        const int downNote = sampleGroups[(size_t) groupIndex].downMidiNote;
+        if (downNote >= 0 && downNote < AudioPluginAudioProcessor::midiNoteActivityCount)
+            sampleGroupIndexByMidiNote[(size_t) downNote] = groupIndex;
     }
 }
 
@@ -1636,10 +1680,190 @@ void AudioPluginAudioProcessorEditor::selectSampleGroupForEditing(int groupIndex
     sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
     if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
         refreshSampleSpecificControls();
+    updateShakeMode();
+}
+
+void AudioPluginAudioProcessorEditor::resetShakeMidiInputCheck() noexcept
+{
+    shakeMidiInputChecks.fill({});
+    shakeMidiInputWarningShown = false;
+}
+
+void AudioPluginAudioProcessorEditor::watchShakeMidiInput(int note)
+{
+    if (!shakeMidiInputMonitoring || shakeMidiInputWarningShown || note < 0 || note > 127)
+        return;
+    auto& check = shakeMidiInputChecks[static_cast<size_t>(note)];
+    const auto generation = processorRef.getIncomingNoteOnGeneration(note);
+    // Keep the first unanswered stroke's deadline; continuous shaking must
+    // not postpone a missing-input warning indefinitely.
+    if (check.deadlineMs <= 0.0 || generation != check.generation)
+        check = { generation, juce::Time::getMillisecondCounterHiRes() + 1000.0 };
+}
+
+void AudioPluginAudioProcessorEditor::checkShakeMidiInput()
+{
+    if (shakeMidiInputWarningShown)
+        return;
+    const auto now = juce::Time::getMillisecondCounterHiRes();
+    for (size_t note = 0; note < shakeMidiInputChecks.size(); ++note)
+    {
+        auto& check = shakeMidiInputChecks[note];
+        if (check.deadlineMs <= 0.0)
+            continue;
+        if (processorRef.getIncomingNoteOnGeneration(static_cast<int>(note)) != check.generation)
+            check.deadlineMs = 0.0;
+        else if (now >= check.deadlineMs)
+        {
+            shakeMidiInputWarningShown = true;
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                "SHAKE MIDI input", "Enable ULICHPERC MIDI in your DAW settings.");
+            return;
+        }
+    }
+}
+
+void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
+{
+    const auto take = processorRef.getRecordedMidiStatus();
+    midiDragButton.setVisible(sampleEffectsModalOpen);
+    midiDragButton.setEnabled(take.available);
+    midiInsertButton.setVisible(sampleEffectsModalOpen && abletonMidiInsertSupported);
+    midiInsertButton.setEnabled(take.available && !abletonMidiBridge.isPending());
+    const int group = processorRef.getSelectedSampleGroupIndex();
+    const int input = processorRef.getVirtualMidiInput();
+    const bool trackMidi = input > 0;
+    const bool eligible = sampleEffectsModalOpen
+        && processorRef.isSampleGroupDirectional(group);
+    shakeButton.setVisible(eligible);
+    trackMidiButton.setVisible(eligible);
+    trackMidiButton.setToggleState(trackMidi, juce::dontSendNotification);
+    if (!eligible)
+        shakeButton.setToggleState(false, juce::dontSendNotification);
+    const bool wantsShake = eligible && isShowing() && shakeButton.getToggleState();
+    const bool listening = wantsShake && !processorRef.isPlaybackBypassed();
+    if (listening != shakeListening || group != shakeTargetGroup || input != shakeVirtualInput)
+    {
+        virtualMidi.release();
+        shakeListening = listening;
+        shakeTargetGroup = group;
+        shakeVirtualInput = input;
+        shakeGesture.reset();
+        resetShakeMidiInputCheck();
+        processorRef.setShakeSampleGroup(listening && !trackMidi ? group : -1);
+        processorRef.setShakeVirtualMidiActive(listening && trackMidi);
+        if (listening && trackMidi)
+            processorRef.requestShakeSequenceReset();
+        observedShakeResetGeneration = processorRef.getShakeResetGeneration();
+    }
+    // Device discovery/acknowledgements are timer work, never work before
+    // estimating velocity in a mouse-move callback.
+    if (pollMidi)
+        virtualMidi.poll(1, listening && trackMidi);
+    const bool ready = trackMidi && virtualMidi.isReady();
+
+    if (ready != virtualMidiWasReady)
+    {
+        virtualMidiWasReady = ready;
+        shakeGesture.reset();
+        if (ready)
+            processorRef.requestShakeSequenceReset();
+    }
+    const bool monitorInput = listening && trackMidi;
+    if (monitorInput != shakeMidiInputMonitoring)
+    {
+        resetShakeMidiInputCheck();
+        shakeMidiInputMonitoring = monitorInput;
+    }
+    if (pollMidi && monitorInput)
+        checkShakeMidiInput();
+    shakeButton.setTooltip(trackMidi ? VirtualMidi::portName()
+        + ": enable this MIDI input in the DAW, route it to this track and enable monitoring. "
+        + (virtualMidi.getError().isNotEmpty() ? virtualMidi.getError() + " " : juce::String())
+        + "Move to shake the selected sample."
+        : "Move to audition the selected sample internally. Enable TRACK MIDI to send notes through the DAW input.");
+}
+
+void AudioPluginAudioProcessorEditor::handleShakeMouseMove(const juce::MouseEvent& event)
+{
+    updateShakeMode();
+    if (!shakeListening || event.mods.isAnyMouseButtonDown()
+        || processorRef.isPlaybackBypassed())
+        return;
+    const auto position = event.getEventRelativeTo(this).position;
+    if (!getLocalBounds().toFloat().contains(position))
+        return;
+    const auto generation = processorRef.getShakeResetGeneration();
+    if (generation != observedShakeResetGeneration)
+    {
+        observedShakeResetGeneration = generation;
+        shakeGesture.reset();
+    }
+    const auto previous = shakeGesture;
+    if (const auto velocity = shakeGesture.move(position, juce::Time::getMillisecondCounterHiRes(),
+                                                static_cast<float>(getWidth())))
+    {
+        const auto& groups = processorRef.getSampleGroups();
+        const int expectedNote = shakeTargetGroup >= 0 && shakeTargetGroup < static_cast<int>(groups.size())
+            ? (shakeGesture.isDownStroke() ? groups[static_cast<size_t>(shakeTargetGroup)].downMidiNote
+                                          : groups[static_cast<size_t>(shakeTargetGroup)].midiNote) : -1;
+        if (shakeVirtualInput > 0)
+            watchShakeMidiInput(expectedNote);
+        const bool accepted = shakeVirtualInput > 0
+            ? expectedNote >= 0 && virtualMidi.trigger(expectedNote, *velocity)
+            : processorRef.triggerShake(*velocity, shakeGesture.isDownStroke());
+        if (!accepted)
+        {
+            shakeGesture = previous;
+            shakeGesture.rebase();
+        }
+    }
+}
+
+void AudioPluginAudioProcessorEditor::startRecordedMidiDrag()
+{
+    const auto file = processorRef.createRecordedShakeMidiFile();
+    if (file.existsAsFile())
+        juce::DragAndDropContainer::performExternalDragDropOfFiles(
+            juce::StringArray { file.getFullPathName() }, false, &midiDragButton);
+}
+
+void AudioPluginAudioProcessorEditor::insertRecordedMidi()
+{
+    if (!abletonMidiInsertSupported || abletonMidiBridge.isPending())
+        return;
+    double arrangementStart = -1.0;
+    const auto file = processorRef.createRecordedShakeMidiFile(&arrangementStart);
+    const auto result = abletonMidiBridge.insert(file, arrangementStart, processorRef.parameters);
+    if (result.failed())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                              "Add MIDI", result.getErrorMessage());
+        return;
+    }
+    midiInsertFeedbackUntilMs = 0.0;
+    midiInsertButton.setButtonText("ADDING...");
+    updateShakeMode();
 }
 
 void AudioPluginAudioProcessorEditor::timerCallback()
 {
+    if (const auto result = abletonMidiBridge.poll())
+    {
+        midiInsertButton.setButtonText(result->wasOk() ? "ADDED" : "ADD MIDI");
+        midiInsertFeedbackUntilMs = result->wasOk()
+            ? juce::Time::getMillisecondCounterHiRes() + 2000.0 : 0.0;
+        if (result->failed())
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                  "Add MIDI", result->getErrorMessage());
+    }
+    if (midiInsertFeedbackUntilMs > 0.0
+        && juce::Time::getMillisecondCounterHiRes() >= midiInsertFeedbackUntilMs)
+    {
+        midiInsertFeedbackUntilMs = 0.0;
+        midiInsertButton.setButtonText("ADD MIDI");
+    }
+    updateShakeMode(true);
     updateSampleTrimInputs();
     if (!sampleLoopBpmValueInput.editing()
         && sampleLoopBpmSlider.getValue() < 1.0)
@@ -1690,9 +1914,11 @@ void AudioPluginAudioProcessorEditor::timerCallback()
         const int groupIndex = sampleGroupIndexByMidiNote[noteIndex];
         if (groupIndex >= 0)
         {
+            const auto& group = processorRef.getSampleGroups()[static_cast<size_t>(groupIndex)];
             sampleGroupSelector.setActivityVelocity(
                 groupIndex,
-                processorRef.getMidiNoteActivityVelocity(midiNote));
+                juce::jmax(processorRef.getMidiNoteActivityVelocity(group.midiNote),
+                    processorRef.getMidiNoteActivityVelocity(group.downMidiNote)));
         }
     }
 }
@@ -1781,6 +2007,10 @@ void AudioPluginAudioProcessorEditor::resized()
     effectsTabButton.setBounds(tabsLeft, modalBounds.getY() + 14, tabWidth, tabHeight);
     sampleTabButton.setBounds(tabsLeft + tabWidth + tabGap,
                               modalBounds.getY() + 14, tabWidth, tabHeight);
+    shakeButton.setBounds(modalBounds.getRight() - 100, modalBounds.getY() + 14, 86, tabHeight);
+    trackMidiButton.setBounds(shakeButton.getX(), shakeButton.getBottom() + 6, 86, 26);
+    midiDragButton.setBounds(modalBounds.getRight() - 222, modalBounds.getY() + 14, 110, tabHeight);
+    midiInsertButton.setBounds(modalBounds.getX() + 14, modalBounds.getY() + 14, 110, tabHeight);
 
     const int modalKnobCentreY = modalBounds.getY() + 82;
     constexpr int effectsKnobStep = 110;

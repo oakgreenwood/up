@@ -109,6 +109,121 @@ for the 2 ms edit fades and region-boundary crossfade.
 
 ## Sample Effects Modal
 
+### Cursor Shake Mode
+
+When Edit Samples is open for a group containing `_u` or `_d` sounds, `SHAKE`
+appears at the top right, on both tabs. It defaults off and is editor-session
+state, not a saved/automatable parameter. When enabled, cursor movement anywhere
+inside the editor (including over child controls) triggers the selected group
+without clicking. Knob/handle drags retain their normal editing behavior and do
+not generate shake hits. Leaving the editor rebases the cursor so re-entry does
+not interpret the jump as a stroke. Hiding/closing the editor or closing sample
+editing disables the mode. Selecting another directional group resets the
+gesture and target; selecting an ordinary group turns it off.
+
+`TRACK MIDI` appears directly below SHAKE for directional groups, on both tabs.
+It defaults off for new state and reuses the saved `virtualMidiInput` choice:
+off = internal SHAKE audition; on = send through `ULICHPERC MIDI`, playing only
+returned DAW input instead of also triggering locally. Normal incoming MIDI
+continues to play in either mode. Mode changes reset the gesture/target and
+pending checks without disabling SHAKE. The button follows restored project
+state and is not an automatable host parameter. There is no routing popup or
+RECORD/PLAY control, and no recording-state detector or Control Surface is needed.
+
+With TRACK MIDI off, the existing fixed local SHAKE queue supplies audio/capture
+and generated plugin MIDI output where supported. No helper lease is held and
+no missing-input warning is armed. With TRACK MIDI on, the helper is claimed
+only while SHAKE is enabled and not bypassed. DAW input routing/monitoring is
+required (normally armed with Monitor Auto in Live); returned MIDI alone supplies
+new playback/capture. Pending old direct note-offs may flush and existing voice
+tails can finish; the switch prevents new local triggers rather than killing
+ordinary MIDI voices. Discovery remains timer work, not mouse-motion work.
+
+TRACK MIDI + SHAKE explicitly selects the input check, independently of whether
+the DAW is stopped, playing or recording. The first unanswered stroke for each
+`_u`/`_d` pitch starts a one-second wait before sending. Only incoming positive
+note-ons of that exact pitch, on any channel, acknowledge it. Local generated
+activity, note-offs, resets and other pitches do not. Repeated unanswered strokes
+do not extend the deadline; failed helper sends still arm it.
+
+After timeout, the editor timer shows `Enable ULICHPERC MIDI in your DAW settings.`
+The asynchronous alert appears once per TRACK MIDI/SHAKE target session. Turning
+TRACK MIDI or SHAKE off, changing target, bypass, hide/close cancels pending checks.
+Recording start/stop alone does not change the selected mode or cancel checks.
+An unrelated controller playing the same pitch can satisfy the check; this is
+input presence, not source-port identification or proof of recorded clips.
+
+`ShakeGesture` estimates velocity from the first usable motion events, rather
+than waiting for the 30 Hz UI timer or a completed stroke. Three logical pixels
+start the first stroke. A reversal more than roughly 110 degrees, accumulating
+six pixels, starts the next hit; a slowly adapting direction tolerates slight
+curves. Reversals are at least 12 ms apart to reject jitter. Continuous movement
+in one direction does not repeat hits. Speed maps to MIDI velocity 1..127 with
+a square-root curve, normalized to editor width; there is no additional control.
+
+First movement sends the selected group’s `_u` MIDI note; reversals alternate
+with its adjacent `_d` note. Both notes share the same editing group, velocity
+pools, four-second timeout and opposite-direction choke rules. The
+first event after a pause longer than 100 ms establishes a fresh speed baseline;
+direction is retained until the four-second timeout. Host playback starts also
+reset the gesture before its next movement. Stopping the cursor does not mute
+an ordinary one-shot. Generated MIDI is described in
+[shake recording](building.md#shake-midi-recording).
+
+### Captured MIDI
+
+The cache captures SHAKE and mapped incoming MIDI notes during DAW playback,
+recording and stopped audition. Playback start and recording start each replace
+the old take, including punch-in during playback. While neither playing nor
+recording, the first captured note after at least four seconds without a captured
+note-on replaces the old take. Long pauses during playback/recording do not
+split it. The same take continues through stop/punch-out until another start or
+stopped-idle boundary. An empty replacement leaves nothing to export.
+
+`DRAG MIDI` sits next to SHAKE on both sample-editing tabs. It is enabled after
+the first captured note and exports the notes collected so far, including while
+playing/recording. Drag it onto the plugin's MIDI track or another MIDI track at
+the desired insertion point. This imports a standard MIDI clip without a separate
+recording track or plugin MIDI-output routing.
+
+`ADD MIDI` appears at the left of the tab row in a recognized Live 11/generic
+newer Live host on macOS/Windows; known Live 6..10 hosts hide it. It snapshots
+the same MIDI file as DRAG MIDI and requests
+insertion on the requesting plugin's track, at the take's original Arrangement
+start. It is disabled without a take or while an insertion is pending. Its
+caption changes to `ADDING...`, then briefly `ADDED` after Live acknowledges
+success; failures show a message. This legacy insertion client needs a separate
+insertion companion. The included `ULICHPERC_Transport` script supplies recording
+state only; see [its setup and limits](../integrations/ableton/README.md).
+Neither the system clipboard nor application activation handling is used.
+
+The bridge matches the request's fresh ULICH Link parameter token against
+devices on tracks, including nested rack chains. It does not infer the track
+from selection or a potentially duplicated name. Ambiguous/missing matches,
+overlapping clips, frozen/recording destinations and unknown original host
+positions fail explicitly. A stale/absent script reports setup instructions.
+Message-thread IPC polling is capped at 5 Hz while pending; it stops after
+15 seconds and never automatically retries an uncertain insertion. The native
+drag workflow remains available in every host.
+
+Recording start also resets the shake direction and up/down sequence, including
+punching into recording during playback. The first cached stroke therefore starts
+with `_u`, matching the clip's first directional hit when replayed.
+
+The clip retains silence measured from a playback/recording start, plus note
+velocities, channels and beat timing. A stopped-idle take begins at its first hit.
+Open notes close at the exported snapshot's end; dragging does not stop playback
+or end capture. Closing/reopening the editor retains the current take within the
+same processor instance. The cache is runtime-only and is not saved in plugin
+state. AU in Ableton Live can capture SHAKE returned through a configured virtual
+MIDI input; direct AU MIDI output remains unavailable there.
+
+Export creates a uniquely named `.mid` in the system temp directory only when
+dragging begins. Files are retained for asynchronous DAW import, including after
+editor close, processor destruction or a new recording. The fixed cache holds
+32768 notes and at most 65536 quarter-note beats. A capped take keeps its captured prefix and exports
+with `partial` in the filename. See the [cache audit](realtime-audio-audit-shake-cache.md).
+
 Sample-specific controls are hidden from the main editor until the centred
 `EDIT SAMPLES` button above the sample-group sticks is clicked. The modal uses
 an opaque `#D9D9D9` background, spans the editor width inside the existing

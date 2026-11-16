@@ -13,6 +13,11 @@ voice's PSOLA Formant followed by its LPC EQ/saturation, Mono, Panorama and samp
 process global Rzhavchina, then OTT, then mix independent background noise.
 The prewarmer's persistent worker performs all cache rendering and reclamation.
 
+`HostTempoTracker` reports observed stopped-to-playing/recording transitions.
+Before MIDI dispatch, each start resets the sampler's up/down sequence so its
+first directional hit uses `_u`, independently of `prepareToPlay` or pause length.
+Missing host position data does not change the last known transition state.
+
 Rendering now uses fixed chunks of at most 512 frames to capture a noise trigger
 without block-size-dependent allocation. Each chunk renders percussion and
 captures latency-aligned voice hits, computes noise modulation, processes Rzhavchina
@@ -22,6 +27,83 @@ the synth, preserving JUCE's default 32-frame coalescing and exact first rendere
 interval independently of chunk boundaries. Future events are not passed to
 JUCE repeatedly; end/zero-block events are dispatched once. Unsupported messages
 longer than three bytes are filtered before constructing owning MIDI messages.
+
+SHAKE merges a bounded list of generated short note events with incoming MIDI
+at dispatch time, preserving source order without copying/growing the incoming
+buffer. The first queued stroke starts at the next callback's sample zero;
+multiple queued strokes retain relative timestamps within that block. Thirty-ms
+note-offs persist across callbacks and precede same-note retriggers. Zero blocks
+retain queued gestures and pending note-offs for the next nonempty callback.
+Only generated notes are returned to VST3/AU output after input dispatch completes.
+Bypass discards gestures and flushes pending generated note-offs on its next
+nonempty callback. See the [shake audit](realtime-audio-audit-shake-midi.md).
+
+TRACK MIDI explicitly controls SHAKE routing. Off restores the bounded local
+SPSC queue, internal voice playback, take capture and supported plugin MIDI
+output. On invalidates the local target and publishes the active virtual flag;
+audio rejects local note-ons if either this flag or the saved mode is true.
+Pending previous note-offs still flush; returned MIDI alone plays/captures new
+hits. Switching off installs a new target session before clearing the runtime
+flag, so stale commands remain invalid. Existing voices/tails are not abruptly
+killed. Helper IPC/device/file work stays outside plugin render in both modes.
+
+Incoming short positive-velocity note-ons update the fixed lock-free generation
+counter for their actual pitch. Generated local events never update that counter.
+Only enabled TRACK MIDI + SHAKE arms expected-note checks; the DAW recording flag
+is not read. Message snapshots the counter before sending, owns the one-second
+pending deadlines and shows the warning once per mode/target session if there
+is no matching input. Continued unanswered strokes do not postpone the warning,
+and failed helper sends still arm it. Mode off/SHAKE off, hide/close, bypass or
+target change cancels pending state. Transport start/stop alone does not.
+
+Native transport still supplies take/gesture boundaries where available. The
+observed Live VST3 missing recording flag does not affect TRACK MIDI routing,
+its return-input alert or actual DAW input recording. No per-DAW companion,
+Control Surface or automatic recording-state inference is required. See the
+[virtual MIDI audit](realtime-audio-audit-virtual-midi.md).
+
+`ShakeMidiTake` captures generated shake notes and incoming note-on/off events
+for mapped sample notes, preserving channels. Incoming controller messages are
+not exported, but all-notes-off / all-sound-off close captured notes on their
+channel. The immutable sample-note inventory filters unmapped incoming notes.
+
+Observed playback start and recording start (including punch-in during playback)
+start a fresh take and invalidate the previous take's availability. These
+transport boundaries also reset the shake gesture and up/down sequence. While
+neither playing nor recording, the first captured note-on after four seconds
+without a captured note-on starts a fresh take at that event. Frame time and a
+monotonic-clock check cover offline processing and suspended callbacks. The idle
+condition cannot split a take during playback or recording. Stop/punch-out alone
+does not replace a take. A stopped take with no held notes can finalize after
+four seconds; it remains available until the next qualifying note starts a new
+take. Held notes retain their actual note-off timing.
+
+Each callback publishes a readable prefix, making the take available after its
+first note even while capture continues. Note starts/channel/velocity are
+immutable after publication; note ends and prefix metadata use lock-free atomics.
+Message pins a slot while copying, and audio never resets pinned storage. Open
+notes in a copied snapshot close at its end without stopping live notes.
+
+The same host-position query also supplies a finite optional PPQ position.
+At take creation, its original Arrangement start is written into the reserved,
+unpinned slot before publication and remains immutable for that generation.
+Transport-start takes use that block's host PPQ; stopped-idle takes use the
+stationary playhead at their first hit. A newly started take within a running
+block includes its event frame offset. Missing/negative PPQ is marked unavailable
+for automatic insertion, while manual file drag still works. Snapshot/export
+copies the origin under the existing slot pin, keeping it paired with the notes.
+This adds scalar arithmetic only in render, with no file/bridge/UI calls.
+
+Beat time advances using rendered frames and the current block's host BPM. A
+transport-start take preserves leading silence; a stopped-idle take begins at
+its first hit. Loop passes append in elapsed beat order; seeking does not insert
+timeline gaps. Missing position retains the last known mode without inventing
+transitions; an instance with no known host mode behaves as stopped. Missing BPM
+uses the existing last-known tempo; capture constrains its clock to 1..1000 BPM
+for bounded MIDI ticks. Zero blocks dispatch incoming notes but advance no time
+and consume no queued shake gestures. Bypass, release and preparation finalize
+the current take. No MIDI-file construction, allocation, large note-array clear
+or file writing occurs in render; see the [cache audit](realtime-audio-audit-shake-cache.md).
 
 `RzhavProcessor` implements `Rzhavchina`: true bypass at `0`; above zero, bit depth
 falls from `12` to `8` bits and target sample rate from `21 kHz` to `9 kHz`, clamped
@@ -612,6 +694,18 @@ separate worker, recent-five scheduling, fixed-slot publication and off-audio
 reclamation. See [the one-shot removal audit](realtime-audio-audit-oneshot-pitch-removal.md)
 for remaining plugin-wide realtime blockers.
 
+For directional sample groups, a `_d` hit chokes the same group's active `_u`
+voices over 40 ms; a `_u` hit chokes that group's active `_d` voices over 130 ms.
+The choke is independent of the one-shot note-off rule and the saved Release
+parameter. Both frame counts and reciprocals are prepared from the valid host
+sample rate; scheduling selects by the outgoing voice's actual direction.
+After the shared effect latency, a quadratic ease-out fades the final stereo
+voice output and its delayed noise
+hits. It also fades any formant/EQ tail; at exact zero the voice is cleared
+without draining additional audio. Delay and fade counters persist across
+render sub-blocks and are reset on preparation, note start and hard stop.
+See [alternating directions](samples-and-velocity.md#alternating-directions).
+
 ## Formant
 
 Formant is the surviving PSOLA option, previously called Formant3. The separate
@@ -815,3 +909,15 @@ Warp buffers live in fixed worker-owned slots. Audio acquisition makes at most
 two atomic pin attempts and audio release only decrements a reader count. The
 worker publishes completed immutable buffers and destroys retired ones after all
 voice leases release. See [the recent warp-cache realtime audit](realtime-audio-audit-recent-warp-cache.md).
+
+## Fixed Direction MIDI Notes
+
+Directional groups reserve adjacent up/down MIDI notes. The loader registers a
+fixed 128-entry down-note-to-root table before rendering. Synth dispatch resolves
+the incoming note to the canonical group for layer selection/choke identity,
+then chooses up for the root and down for its alias. Voices retain the actual
+input note for note-off and the sound root for shared effects, spectrum, noise
+and playhead state. Ordinary groups remain single-note mappings. SHAKE carries
+a direction bit through its existing fixed queue; generated output and captured
+MIDI contain the actual alternating notes. The virtual helper is unchanged.
+See [direction note audit](realtime-audio-audit-direction-notes.md).

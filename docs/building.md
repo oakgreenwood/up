@@ -6,10 +6,26 @@ Check current scripts and target settings before running commands.
 ## Targets And Dependencies
 
 - Project `ulichperc`; product `ulichpercs`; company `shroomnoise`.
-- Synth with MIDI input and no MIDI output.
+- Synth with MIDI input and generated shake MIDI output (`NEEDS_MIDI_OUTPUT=TRUE`).
+- Separate `ULICHPERCMidi` background helper publishes the `ULICHPERC MIDI` input for
+  recording on the instrument's own track. See
+  [virtual MIDI installation/build requirements](../integrations/virtual-midi/README.md).
+  `ULICHPERC_BUILD_MIDI_COMPONENT` defaults ON; Windows configuration requires
+  the compatible JUCE MIDI Services/CppWinRT SDK packages. Disable this option
+  explicitly for plugin-only builds without those dependencies.
 - Formats: Windows `VST3`; macOS `VST3`, `AU`, `Standalone`;
   other platforms `VST3`, `Standalone`.
 - JUCE: CPM fetch at the tag pinned in `CMakeLists.txt`.
+- On macOS, `cmake/EnableAuRecording.cmake` generates a copy of the pinned AUv2
+  wrapper in the build directory and replaces only its transport query. It uses
+  `HostCallbackInfo::transportStateProc2` when supplied by the host, publishing
+  recording as well as playing/looping; the legacy callback remains the fallback.
+  The downloaded dependency is unchanged. Configuration fails if the expected
+  source fragment disappears, so JUCE updates require reviewing this overlay.
+  The generated wrapper includes `Source/Tempo/HostRecordingCallbackReceiver.h`
+  via an AU-only include path and reports callback presence to the processor's
+  lock-free runtime enum. It does not depend on the concrete processor header.
+  This applies to arm64/x86_64/universal AU builds; VST3 and Windows are unchanged.
 - RubberBand: `external/rubberband/single/RubberBandSingle.cpp`.
 - The retained Formant EQ/saturation and PSOLA core compile from `Source/Effects/FormantShifter.*` and
   `Source/Effects/PsolaFormantShifter.*` in the existing target. The native C++
@@ -26,6 +42,22 @@ spectrum handoff in `Source/Effects/SampleSpectrum.h` and graph in
 use the already-linked JUCE DSP module. No dependencies or platform-specific
 code are added for macOS arm64/x86_64/universal or Windows.
 
+`Source/UI/AbletonMidiBridgeClient.*` is the separate legacy ADD MIDI insertion
+client. SHAKE does not use it or require an Ableton Control Surface: TRACK MIDI mode
+routes through the ordinary system MIDI input while enabled. The prototype
+`ULICHPERC_Transport` companion/installers and transport-state polling were
+removed. Only the virtual MIDI helper needs installation for SHAKE.
+
+## Virtual MIDI Source And Distribution Files
+
+`integrations/virtual-midi/` is the maintained helper source, installation scripts
+and setup guide. The `VirtualMidi` CMake install component writes generated
+distribution files to `<prefix>/virtual-midi/`; the documented `--prefix stage`
+creates the Git-ignored `stage/virtual-midi/` folder. Its installer/README are
+intentional copies packaged beside the compiled helper, not additional sources.
+Edit only the source files and regenerate the distribution with CMake. Nothing
+in `stage/` is required as build input; it can be removed and regenerated.
+
 ## Build Command
 
 For a macOS Debug plugin build, run `./build.sh` from the repository root. It
@@ -35,6 +67,62 @@ configures Xcode and builds both VST3 and AU. CMake's enabled
 The script then uses `sudo` to replace the system VST3 bundle in
 `/Library/Audio/Plug-Ins/VST3`. Build outputs remain in
 `build/ulichperc_artefacts/Debug/`. This helper is not a Windows build command.
+
+## Shake MIDI Recording
+
+To capture without routing plugin MIDI output, enable SHAKE or play incoming
+MIDI notes mapped to samples. Capture works during playback, recording and
+stopped audition. Drag `DRAG MIDI` from the sample editor
+onto the plugin's own MIDI track or another MIDI track. It creates a type-0,
+single-track standard MIDI file at 960 ticks per quarter note, with note/channel/
+velocity data and the current take's relative beat timing. SHAKE uses channel 1;
+incoming notes retain their channels. Drop it at the original playback/recording
+start to retain leading silence. Live imports standard MIDI
+files as clips; the DAW controls the final drop position.
+
+In Ableton Live, the legacy ADD MIDI client can ask a separate insertion companion
+to insert the snapshot at its retained original Arrangement start, on the
+track containing the requesting plugin. This bypasses the clipboard and plugin
+MIDI-output routing. It does not select a destination from the currently selected
+track and does not overwrite existing clips. A temporary Session clip (and, only
+if needed, temporary scene) stages notes for `duplicate_clip_to_arrangement`,
+using APIs shared by Live 11/12. It is cleaned up in the same undo group and
+never launched. The ordinary Live clip-note API has no per-note channel field;
+the exported MIDI file used by DRAG MIDI keeps channels. AU/Live can use virtual
+SHAKE routing; direct AU MIDI output remains unsupported there.
+
+The host's observed playback-start and recording-start edges replace the old
+take. While neither playing nor recording, the first captured note-on after a
+four-second pause replaces it too. The pause never splits a playing/recording
+take. Missing host position retains the last known mode; without any known
+mode, capture behaves as stopped audition. An empty replacement leaves nothing
+to export. DRAG MIDI can snapshot a take while it grows. Loop passes are appended
+in elapsed beat order. Host tempo is sampled per callback, so fast tempo ramps and
+drop/import alignment need DAW testing. The cache is not saved in plugin state.
+Export is message-thread-only and keeps its temporary MIDI file alive for a
+host that reads it after a native drop. Returned virtual MIDI is ordinary incoming
+MIDI and populates the same cache in AU/VST3.
+See [the UI workflow](ui.md#captured-midi).
+
+TRACK MIDI below SHAKE chooses the route: off (new-state default) auditions
+internally using the existing local queue; on uses `ULICHPERC MIDI`, disables
+new local SHAKE hits and waits for returned DAW input. The choice uses the existing
+saved route property. The helper is claimed only with TRACK MIDI + SHAKE enabled;
+input routing/monitoring is required in that mode. A stroke with no matching input
+note-on after one second shows the settings alert once per mode/target session,
+independent of recording state. TRACK MIDI off never shows that warning. Native
+transport continues to supply tempo/take boundaries where available. No Control
+Surface or recording-state companion is needed. See the
+[component guide](../integrations/virtual-midi/README.md).
+
+The retained shake/cache components are header-only: `Source/UI/ShakeGesture.h`,
+`Source/Midi/ShakeMidiState.h` and `Source/Midi/ShakeMidiTake.h`. There are no new
+libraries; file drag uses JUCE's native macOS/Windows drag-and-drop support.
+The pinned JUCE VST3 wrapper and both AU input/output MIDI buffers reserve at
+least 2048 bytes before processing. Generated output is capped at 224 short
+events (2016 serialized bytes), preserving that capacity without audio-thread
+resizing/swapping. Other wrapper types do not write generated output. Re-audit
+this guarantee if updating JUCE or enabling additional plugin formats.
 
 ## Standalone App (macOS)
 

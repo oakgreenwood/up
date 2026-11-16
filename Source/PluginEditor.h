@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -10,6 +11,9 @@
 #include "UI/SampleEqualiserEditor.h"
 #include "UI/SampleWaveformEditor.h"
 #include "UI/NoiseWaveformEditor.h"
+#include "UI/ShakeGesture.h"
+#include "UI/AbletonMidiBridgeClient.h"
+#include "Midi/VirtualMidiClient.h"
 
 class CustomLookAndFeel;
 
@@ -257,6 +261,13 @@ private:
     void refreshApplyToAllButton();
     void setSampleEffectsModalVisible(bool shouldBeVisible);
     void updateSampleEditorTabVisibility();
+    void updateShakeMode(bool pollMidi = false);
+    void resetShakeMidiInputCheck() noexcept;
+    void watchShakeMidiInput(int note);
+    void checkShakeMidiInput();
+    void handleShakeMouseMove(const juce::MouseEvent&);
+    void startRecordedMidiDrag();
+    void insertRecordedMidi();
     void openNoiseFileChooser();
     void parameterValueChanged(int parameterIndex, float newValue) override;
     void parameterGestureChanged(int parameterIndex, bool gestureIsStarting) override;
@@ -268,10 +279,73 @@ private:
     // This reference is provided as a quick way for your editor to
     // access the processor object that created it.
     AudioPluginAudioProcessor& processorRef;
+    const bool abletonMidiInsertSupported;
+    AbletonMidiBridgeClient abletonMidiBridge;
+    juce::TextButton midiInsertButton { "ADD MIDI" };
+    double midiInsertFeedbackUntilMs = 0.0;
     std::unique_ptr<juce::Component> sampleEffectsModalSurface;
     std::unique_ptr<juce::Button> sampleEffectsCloseButton;
     juce::TextButton effectsTabButton { "EFFECTS" };
     juce::TextButton sampleTabButton { "SAMPLE" };
+    struct ShakeButton final : juce::TextButton
+    {
+        ShakeButton() : juce::TextButton("SHAKE") {}
+        void mouseDown(const juce::MouseEvent& event) override
+        {
+            if (event.mods.isPopupMenu())
+                return;
+            juce::TextButton::mouseDown(event);
+        }
+    } shakeButton;
+    juce::TextButton trackMidiButton { "TRACK MIDI" };
+    VirtualMidiClient virtualMidi;
+    struct MidiDragButton final : juce::TextButton
+    {
+        MidiDragButton() : juce::TextButton("DRAG MIDI") {}
+        void mouseDown(const juce::MouseEvent& event) override
+        {
+            dragStarted = false;
+            juce::TextButton::mouseDown(event);
+        }
+        void mouseDrag(const juce::MouseEvent& event) override
+        {
+            juce::TextButton::mouseDrag(event);
+            if (!dragStarted && isEnabled() && event.getDistanceFromDragStart() >= 4 && onDrag)
+            {
+                dragStarted = true;
+                onDrag();
+            }
+        }
+        std::function<void()> onDrag;
+        bool dragStarted = false;
+    } midiDragButton;
+    struct ShakeMouseListener final : juce::MouseListener
+    {
+        explicit ShakeMouseListener(AudioPluginAudioProcessorEditor& editor) : owner(editor) {}
+        void mouseMove(const juce::MouseEvent& event) override { owner.handleShakeMouseMove(event); }
+        void mouseDown(const juce::MouseEvent&) override { owner.shakeGesture.rebase(); }
+        void mouseDrag(const juce::MouseEvent&) override { owner.shakeGesture.rebase(); }
+        void mouseExit(const juce::MouseEvent& event) override
+        {
+            if (!owner.getLocalBounds().toFloat().contains(event.getEventRelativeTo(&owner).position))
+                owner.shakeGesture.rebase();
+        }
+        AudioPluginAudioProcessorEditor& owner;
+    } shakeMouseListener { *this };
+    ShakeGesture shakeGesture;
+    uint32_t observedShakeResetGeneration = 0;
+    int shakeTargetGroup = -1;
+    int shakeVirtualInput = -1;
+    bool virtualMidiWasReady = false;
+    bool shakeListening = false;
+    struct ShakeMidiInputCheck
+    {
+        uint32_t generation = 0;
+        double deadlineMs = 0.0;
+    };
+    std::array<ShakeMidiInputCheck, 128> shakeMidiInputChecks {};
+    bool shakeMidiInputMonitoring = false;
+    bool shakeMidiInputWarningShown = false;
     SampleEqualiserEditor equaliserEditor;
     SampleWaveformEditor sampleWaveformEditor;
     NoiseWaveformEditor noiseWaveform;

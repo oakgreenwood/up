@@ -9,6 +9,12 @@ struct HostTempoUpdate
     double bpm = 153.0;
     bool bpmMoving = false;
     bool hostBpmAvailable = false;
+    bool transportStarted = false;
+    bool hostPositionAvailable = false;
+    bool recording = false;
+    bool playing = false;
+    bool hostPpqAvailable = false;
+    double ppqPosition = 0.0;
 };
 
 class HostTempoTracker
@@ -31,4 +37,5 @@ private:
     double lastHostBpmForMotion = 0.0;
     double lastHostBpmChangeSec = 0.0;
     bool hasHostBpmForMotion = false;
+    bool wasTransportRunning = false;
 };

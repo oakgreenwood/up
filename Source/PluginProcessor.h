@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -12,15 +13,19 @@
 #include "Effects/NoiseSidechain.h"
 #include "Playback/BackgroundNoisePlayer.h"
 #include "Midi/MidiNoteActivityState.h"
+#include "Midi/ShakeMidiState.h"
+#include "Midi/ShakeMidiTake.h"
 #include "PercussionSynthesiser.h"
 #include "Parameters/SampleSpecificParameterState.h"
 #include "Parameters/SampleSpecificRealtimeCache.h"
 #include "SampleLibrary/PercussionSampleLibrary.h"
 #include "Tempo/HostTempoTracker.h"
+#include "Tempo/HostRecordingCallbackReceiver.h"
 #include "Warp/WarpCachePrewarmer.h"
 
 //==============================================================================
 class AudioPluginAudioProcessor final : public juce::AudioProcessor,
+                                        public Ulichperc::HostRecordingCallbackReceiver,
                                         private juce::AudioProcessorValueTreeState::Listener
 {
 public:
@@ -82,6 +87,42 @@ public:
     float getMidiNoteActivityVelocity(int midiNote) const noexcept;
     uint32_t getMidiNoteActivityGeneration(int midiNote) const noexcept;
     int getLatestMidiNoteOnNote() const noexcept;
+    uint32_t getIncomingNoteOnGeneration(int note) const noexcept
+    {
+        return note >= 0 && note < 128
+            ? incomingNoteOnGenerations[static_cast<size_t>(note)].load(std::memory_order_relaxed) : 0;
+    }
+    bool isSampleGroupDirectional(int groupIndex) const noexcept;
+    // Message-thread-only shake control. Session state is deliberately not saved.
+    void setShakeSampleGroup(int groupIndex) noexcept;
+    bool triggerShake(int velocity, bool down = false) noexcept { return shakeMidi.trigger(velocity, down); }
+    uint32_t getShakeResetGeneration() const noexcept { return shakeMidi.getResetGeneration(); }
+    // TRACK MIDI: 0 = internal SHAKE, 1 = ULICHPERC MIDI / returned DAW input.
+    int getVirtualMidiInput() const noexcept { return virtualMidiInput.load(std::memory_order_relaxed); }
+    void setVirtualMidiInput(int input);
+    bool isHostRecording() const noexcept { return hostRecording.load(std::memory_order_relaxed); }
+    bool isShakeUsingVirtualMidi() const noexcept
+    { return shakeVirtualMidiActive.load(std::memory_order_acquire) || getVirtualMidiInput() > 0; }
+    void setShakeVirtualMidiActive(bool active) noexcept
+    { shakeVirtualMidiActive.store(active, std::memory_order_release); }
+    void setHostRecordingCallbackAvailable(bool available) noexcept override
+    {
+        hostRecordingCallback.store(available ? Ulichperc::HostRecordingCallbackAvailability::available
+                                             : Ulichperc::HostRecordingCallbackAvailability::unavailable,
+                                    std::memory_order_relaxed);
+    }
+    bool needsManualShakeMode() const noexcept
+    {
+        return hostRecordingCallback.load(std::memory_order_relaxed)
+            == Ulichperc::HostRecordingCallbackAvailability::unavailable;
+    }
+    void requestShakeSequenceReset() noexcept { shakeSequenceResetRequested.store(true, std::memory_order_release); }
+    bool isPlaybackBypassed() const noexcept { return samplePlaybackBypassed.load(std::memory_order_relaxed); }
+    bool hasRecordedShakeMidi() const noexcept { return shakeMidiTake.hasTake(); }
+    ShakeMidiTake::Status getRecordedMidiStatus() const noexcept { return shakeMidiTake.getStatus(); }
+    // Message thread only; writes a snapshot of the current take's published notes.
+    juce::File createRecordedShakeMidiFile(double* arrangementStart = nullptr) const
+    { return shakeMidiTake.createMidiFile(arrangementStart); }
 
     SampleSpectrum& getSampleSpectrum() noexcept { return sampleSpectrum; }
     bool copyNoiseWaveform(int sourceIndex, BackgroundNoisePlayer::Waveform& waveform) const
@@ -134,6 +175,20 @@ private:
     std::atomic<bool> samplePlaybackBypassed { false };
     PercussionSynthesiser sampler;
     MidiNoteActivityState midiNoteActivity;
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+    std::array<std::atomic<uint32_t>, 128> incomingNoteOnGenerations;
+    ShakeMidiState shakeMidi;
+    ShakeMidiTake shakeMidiTake;
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    static_assert(std::atomic<int>::is_always_lock_free);
+    std::atomic<int> virtualMidiInput { 0 };
+    std::atomic<bool> hostRecording { false };
+    std::atomic<bool> shakeVirtualMidiActive { false };
+    static_assert(std::atomic<Ulichperc::HostRecordingCallbackAvailability>::is_always_lock_free);
+    std::atomic<Ulichperc::HostRecordingCallbackAvailability> hostRecordingCallback {
+        Ulichperc::HostRecordingCallbackAvailability::unknown
+    };
+    std::atomic<bool> shakeSequenceResetRequested { false };
     std::vector<PercussionSampleLibrary::SampleGroupInfo> sampleGroups;
     std::atomic<int> selectedSampleGroupIndex { -1 };
     SampleSpecificParameterState sampleSpecificParameters;

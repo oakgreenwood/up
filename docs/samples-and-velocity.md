@@ -10,12 +10,21 @@ For transient JSON or note-off behavior, also read
 The parser strips BinaryData's `samples_` prefix, then accepts a numeric note
 index `N` with optional `vX` (velocity group), `nY` (variation), and `pZ` (pitch
 slot), e.g. `1_v2_n3_p1.wav`. Each omitted optional index defaults to `1`.
-Duplicate `v`/`n`/`p` tokens, non-positive values, or unknown tokens skip the sample.
+An optional final `_u` or `_d` token selects an alternating playback direction,
+e.g. `26_v2_n3_u.wav` or `26_v2_n3_p2_d.wav`. Direction tokens are case-insensitive.
+Duplicate `v`/`n`/`p` tokens, non-positive values, unknown tokens, or repeated /
+non-final direction tokens skip the sample.
 
-Pitch slots expand the note map before MIDI assignment:
-`midiNote = 48 + mappedNoteIndex - 1`.
+Pitch slots and directional pairs expand the note map before MIDI assignment.
+Each `(noteIndex, pitchIndex)` with any direction suffix reserves two adjacent
+notes: the first always requests `_u`, the second always requests `_d`. Ordinary
+slots reserve one. Later numbered groups shift by the inserted slots, preserving
+numeric gaps and existing pitch-slot order. `midiNote = 48 + mappedNoteIndex - 1`
+continues to identify the group's first note. A directional pair extending past
+MIDI 127 is omitted entirely. Existing MIDI clips may need remapping.
+
 The selector uses the same map: one group per `(noteIndex, pitchIndex)`, ignoring
-velocity/variation. `1_v1_n2` and `1_v1_n3` share an item; `4_v1_n1_p1` and
+velocity/variation/direction. `1_v1_n2` and `1_v1_n3` share an item; `4_v1_n1_p1` and
 `4_v1_n1_p2` have separate items. The SAMPLE tab's start/end trim belongs to
 that same group. The start maps onto each layer/variation's own length; the end
 removes the same amount of time from each source's end. Its waveform
@@ -53,14 +62,88 @@ declares `"bpm": 153`.
 | 8 | 55 | `v1:n1-n3` |
 | 9 | 56 | `v1:n1-n4`, `v2:n1-n3`, `v3:n1-n3` |
 | 10-25 | 57-72 | one default sample each: `v1:n1` |
+| 26 | 73 (`u`), 74 (`d`) | `v1:n1-n4`, `v2:n1-n4`, `v3:n1-n4`, each with `_u` and `_d` |
 
 Per MIDI note, `groupCount` is the highest velocity-group index, not the count
 of non-empty groups. If a selected group is empty, search outward by distance,
 checking the higher group before the lower group at each distance.
 
-Choose a random variation within the resolved group. With multiple variations,
-a repeat of that note/group's last variation has a 65% chance to reroll to a
-different one.
+Choose a random variation within the resolved velocity layer and direction.
+With multiple variations, a repeat of that pool's last variation has a 65%
+chance to reroll to a different one. Ordinary samples retain their existing
+selection behavior.
+
+## Alternating Directions
+
+Directional MIDI notes select fixed directions, independently of playback
+history: repeating the first note repeatedly requests `_u`; repeating the second
+requests `_d`. Both notes share one selector entry, waveform, effects/trim cache
+and noise-trigger identity, keyed by the first note. Different pitch slots remain
+separate groups. Note-off tracks each actual input note independently. Velocity
+and variation selection remain independent for each direction.
+
+SHAKE starts on the group's `_u` note and alternates with its `_d` note. Four
+seconds without a stroke, playback/recording starts, selecting another group,
+and playing another mapped sample group reset SHAKE to `_u`. Fixed incoming
+notes always retain their named direction, including after a reset.
+
+If the selected velocity layer lacks the required direction, search the other
+layers by distance, preferring the higher layer on ties. A matching direction
+anywhere in the group takes priority over ordinary samples. If that direction
+is absent from every layer, use the nearest ordinary pool, then the nearest
+opposite-direction pool. The requested MIDI direction remains fixed even when its sample is borrowed. Borrowed samples retain their actual velocity-layer
+gain ranges; the incoming velocity is clamped to that range for the gain ramp.
+
+Starting an actual `_d` sample fades all active `_u` voices in the same mapped
+group over 40 ms. Starting an actual `_u` fades that group's active `_d` voices
+over 130 ms. These rules apply across velocity layers, variations and MIDI
+channels; other groups and pitch slots are unaffected. Choking follows the
+actual sound's immutable direction tag, including direction fallbacks. Ordinary
+fallback sounds do not schedule this fade.
+
+The fade begins when the new opposite-direction hit reaches the output after
+the existing voice-effect latency. The duration belongs to the outgoing sound:
+40 ms for up, 130 ms for down. A quadratic ease-out multiplies the final voice
+output, including effect tails, from unity to exact zero, then clears the voice.
+Further hits do not postpone a scheduled fade. Directional voice stealing
+prefers a voice other than the group's opposite-direction voices so their fades
+can complete; if every voice is a matching opposite-direction voice, the existing
+hard steal remains necessary within the fixed voice count.
+
+The loader builds separate ordinary/up/down variation pools and their scalar
+repeat histories before rendering. Note selection only reads existing storage
+and updates scalar history; it never grows a container or releases sample
+ownership. See the [direction playback audit](realtime-audio-audit-sample-directions.md)
+for the inspected path and existing warp fallback blocker.
+
+### Cursor-Generated Hits
+
+The immutable group inventory records whether any successfully loaded sound has
+a direction suffix. The sample editor uses this flag to enable `SHAKE` without
+reading mutable synthesiser state. Gestures use the
+selected group's two adjacent MIDI notes. TRACK MIDI selects the route: on sends through
+`ULICHPERC MIDI`, with returned DAW MIDI playing/capturing the sound; off uses
+the existing bounded local queue for internal playback/capture.
+The gesture tracks alternating stroke direction and restores its previous state
+if sending fails. Transport resets still invalidate the gesture generation, but
+routing and the expected-note input check do not depend on recording state.
+Only TRACK MIDI mode arms the missing-input warning; internal audition stays quiet.
+
+The export cache captures local/returned SHAKE notes and other incoming MIDI notes for
+mapped samples, retaining velocity and MIDI channel. Its four-second take split
+applies only while stopped; the existing up/down playback timeout above still
+applies independently during all transport modes. See [captured MIDI](ui.md#captured-midi)
+for transport boundaries and live copy/drag snapshots. Incoming capture does not
+add incoming notes to the generated plugin MIDI output.
+
+Generated local/helper notes use channel 1 and a 30 ms gate, shortened before an
+overlapping retrigger. Ordinary one-shots still ignore note-off. Warped/looping
+sounds retain their existing incoming MIDI note-off semantics. Returned notes
+feed audio, MIDI activity, noise triggers and capture; they are not echoed to
+plugin MIDI output. Local mode retains its supported generated MIDI output.
+Recording/replaying notes retains random variation policy.
+See [shake UI](ui.md#cursor-shake-mode) and the
+[virtual MIDI audit](realtime-audio-audit-virtual-midi.md).
 
 ## Velocity Ranges
 

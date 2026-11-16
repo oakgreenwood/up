@@ -16,7 +16,9 @@ jobs:
           submodules: recursive
 
       - name: Configure CMake (Visual Studio 2022, x64)
-        run: cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+        # This job builds only VST3. The separate virtual MIDI distribution needs
+        # the compatible MIDI Services/CppWinRT SDK packages on its build runner.
+        run: cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DULICHPERC_BUILD_MIDI_COMPONENT=OFF
 
       - name: Build VST3 (Release)
         run: cmake --build build-win --config Release --target ulichperc_VST3 --parallel -- /p:DebugSymbols=true /p:DebugType=full

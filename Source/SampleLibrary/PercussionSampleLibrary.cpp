@@ -48,15 +48,21 @@ namespace
     }
 
     int getMappedNoteIndex(const ParsedSampleName& parsed,
-                           const std::map<int, int>& maxPitchIndexByNoteIndex) noexcept
+                           const std::map<int, int>& maxPitchIndexByNoteIndex,
+                           const std::map<std::pair<int, int>, bool>& directionalGroups) noexcept
     {
-        return parsed.noteIndex
+        int directionSlots = 0;
+        for (const auto& group : directionalGroups)
+            if (group.first < std::make_pair(parsed.noteIndex, parsed.pitchIndex) && group.second)
+                ++directionSlots;
+        return parsed.noteIndex + directionSlots
              + countExtraPitchSlotsBefore(parsed.noteIndex, maxPitchIndexByNoteIndex)
              + parsed.pitchIndex
              - 1;
     }
 
-    std::vector<ParsedSampleResource> collectSampleResources(std::map<int, int>& maxPitchIndexByNoteIndex)
+    std::vector<ParsedSampleResource> collectSampleResources(std::map<int, int>& maxPitchIndexByNoteIndex,
+        std::map<std::pair<int, int>, bool>& directionalGroups)
     {
         std::vector<ParsedSampleResource> sampleResources;
 
@@ -82,7 +88,7 @@ namespace
                 && !SampleNameParser::parseSampleName(resourceName, parsed))
             {
                 DBG("  Skipped: invalid sample name pattern from '" << sampleIdentifier
-                    << "' / '" << resourceName << "' (expected note[_vX][_nY][_pZ])");
+                    << "' / '" << resourceName << "' (expected note[_vX][_nY][_pZ][_u|_d])");
                 continue;
             }
 
@@ -94,6 +100,7 @@ namespace
             sampleResource.parsed = parsed;
             sampleResources.push_back(std::move(sampleResource));
 
+            directionalGroups[{ parsed.noteIndex, parsed.pitchIndex }] |= parsed.direction != SampleDirection::none;
             auto& maxPitchIndex = maxPitchIndexByNoteIndex[parsed.noteIndex];
             maxPitchIndex = juce::jmax(maxPitchIndex, parsed.pitchIndex);
         }
@@ -108,15 +115,21 @@ namespace PercussionSampleLibrary
     std::vector<SampleGroupInfo> getEmbeddedSampleGroups()
     {
         std::map<int, int> maxPitchIndexByNoteIndex;
-        const auto resources = collectSampleResources(maxPitchIndexByNoteIndex);
+        std::map<std::pair<int, int>, bool> directionalGroups;
+        const auto resources = collectSampleResources(maxPitchIndexByNoteIndex, directionalGroups);
         std::map<int, SampleGroupInfo> groups;
         for (const auto& resource : resources)
         {
-            const int mapped = getMappedNoteIndex(resource.parsed, maxPitchIndexByNoteIndex);
+            const int mapped = getMappedNoteIndex(resource.parsed, maxPitchIndexByNoteIndex, directionalGroups);
             const int note = 48 + mapped - 1;
-            if (note >= 0 && note < 128)
-                groups.emplace(mapped, SampleGroupInfo {
-                    resource.parsed.noteIndex, resource.parsed.pitchIndex, mapped, note });
+            const bool directional = directionalGroups.at({ resource.parsed.noteIndex, resource.parsed.pitchIndex });
+            if (note >= 0 && note + (directional ? 1 : 0) < 128)
+            {
+                auto& group = groups.emplace(mapped, SampleGroupInfo {
+                    resource.parsed.noteIndex, resource.parsed.pitchIndex, mapped, note }).first->second;
+                group.hasDirectionalSamples = directional;
+                group.downMidiNote = directional ? note + 1 : -1;
+            }
         }
         std::vector<SampleGroupInfo> result;
         for (const auto& group : groups)
@@ -139,7 +152,8 @@ namespace PercussionSampleLibrary
             DBG("  Resource[" << i << "]: " << BinaryData::namedResourceList[i]);
 
         std::map<int, int> maxPitchIndexByNoteIndex;
-        const auto sampleResources = collectSampleResources(maxPitchIndexByNoteIndex);
+        std::map<std::pair<int, int>, bool> directionalGroups;
+        const auto sampleResources = collectSampleResources(maxPitchIndexByNoteIndex, directionalGroups);
 
         std::map<int, SampleGroupInfo> sampleGroupsByMappedNoteIndex;
 
@@ -166,9 +180,10 @@ namespace PercussionSampleLibrary
                 continue;
             }
 
-            const int mappedNoteIndex = getMappedNoteIndex(parsed, maxPitchIndexByNoteIndex);
+            const int mappedNoteIndex = getMappedNoteIndex(parsed, maxPitchIndexByNoteIndex, directionalGroups);
             const int midiNote = 48 + mappedNoteIndex - 1;
-            if (midiNote < 0 || midiNote > 127)
+            const bool directional = directionalGroups.at({ parsed.noteIndex, parsed.pitchIndex });
+            if (midiNote < 0 || midiNote + (directional ? 1 : 0) > 127)
             {
                 DBG("  Skipped: note out of MIDI range, noteIndex=" << parsed.noteIndex
                     << ", pitch=" << parsed.pitchIndex
@@ -189,7 +204,11 @@ namespace PercussionSampleLibrary
             sampleGroup.pitchIndex = parsed.pitchIndex;
             sampleGroup.mappedNoteIndex = mappedNoteIndex;
             sampleGroup.midiNote = midiNote;
-            sampleGroupsByMappedNoteIndex.emplace(mappedNoteIndex, sampleGroup);
+            auto& group = sampleGroupsByMappedNoteIndex.emplace(mappedNoteIndex, sampleGroup).first->second;
+            group.hasDirectionalSamples = directional;
+            group.downMidiNote = directional ? midiNote + 1 : -1;
+            if (directional)
+                sampler.registerDirectionalNotePair(midiNote);
 
             auto* sound = new PercussionSound(
                 sampleResource.cleanName,
@@ -207,7 +226,8 @@ namespace PercussionSampleLibrary
             sampler.registerLayeredSound(sound,
                                          midiNote,
                                          parsed.velocityGroupIndex,
-                                         parsed.variationIndex);
+                                         parsed.variationIndex,
+                                         parsed.direction);
             DBG("  Added PercussionSound for " << sampleResource.cleanName);
         }
 

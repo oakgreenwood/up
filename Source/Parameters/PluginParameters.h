@@ -9,6 +9,11 @@ namespace PluginParameters
 {
     inline constexpr const char* stateType = "params";
 
+    // UI/host bridge only; never used by the audio renderer.
+    inline constexpr const char* abletonLinkId = "abletonLink";
+    inline constexpr const char* abletonLinkName = "ULICH Link";
+    inline constexpr int abletonLinkMaximum = 1048575;
+
     inline constexpr const char* rzhavchinaId = "rzhavchina";
     inline constexpr const char* sustainShortenId = "sustainShorten";
     inline constexpr const char* warpEnabledId = "warpEnabled";

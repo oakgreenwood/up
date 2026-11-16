@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -36,6 +37,8 @@ public:
                    int currentPitchWheelPosition) override;
 
     void stopNote(float velocity, bool allowTailOff) override;
+    bool isPlayingDirectionalSample(int midiNote, SampleDirection direction) const noexcept;
+    void fadeOutForOppositeSample() noexcept;
 
     void pitchWheelMoved(int newPitchWheelValue) override;
     void controllerMoved(int controllerNumber, int newControllerValue) override;
@@ -136,6 +139,12 @@ private:
     bool sourceFinished = false;
     bool equaliserTailReserved = false;
     int formantTailRemaining = 0;
+    int chokeLatencySamples = 0;
+    std::array<int, 2> chokeFadeSamples { 1, 1 }; // Outgoing up, outgoing down.
+    std::array<float, 2> chokeFadeScales { 1.0f, 1.0f };
+    int chokeDelayRemaining = 0;
+    int chokeFadeRemaining = 0;
+    float chokeFadeScale = 1.0f;
 
     // Key-release envelope, separate from the source-time edge fades.
     juce::ADSR adsr;

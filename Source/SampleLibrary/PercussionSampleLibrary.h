@@ -12,6 +12,8 @@ namespace PercussionSampleLibrary
         int pitchIndex = 1;
         int mappedNoteIndex = 0;
         int midiNote = 0;
+        bool hasDirectionalSamples = false;
+        int downMidiNote = -1;
     };
 
     // Constructor/message thread only; inventories names without decoding audio.

@@ -6,18 +6,38 @@ HostTempoUpdate HostTempoTracker::update(juce::AudioPlayHead* playHead, double n
 {
     bool hostTransportRunning = false;
     bool hostBpmAvailable = false;
+    bool hostTransportStarted = false;
+    bool hostPositionAvailable = false;
+    bool hostRecording = false;
+    bool hostPlaying = false;
+    bool hostPpqAvailable = false;
+    double ppqPosition = 0.0;
 
     if (playHead != nullptr)
     {
         if (const auto pos = playHead->getPosition())
         {
-            hostTransportRunning = pos->getIsPlaying() || pos->getIsRecording();
+            hostPositionAvailable = true;
+            hostRecording = pos->getIsRecording();
+            hostPlaying = pos->getIsPlaying();
+            if (const auto ppq = pos->getPpqPosition(); ppq && std::isfinite(*ppq))
+            {
+                hostPpqAvailable = true;
+                ppqPosition = *ppq;
+            }
             if (const auto bpm = pos->getBpm(); bpm && std::isfinite(*bpm) && *bpm >= 1.0)
             {
                 hostBpmAtomic.store(*bpm, std::memory_order_relaxed);
                 hostBpmAvailable = true;
             }
         }
+    }
+
+    if (hostPositionAvailable)
+    {
+        hostTransportRunning = hostPlaying || hostRecording;
+        hostTransportStarted = hostTransportRunning && !wasTransportRunning;
+        wasTransportRunning = hostTransportRunning;
     }
 
     const double hostBpmNow = getBpm();
@@ -34,7 +54,8 @@ HostTempoUpdate HostTempoTracker::update(juce::AudioPlayHead* playHead, double n
                        && ((nowSec - lastHostBpmChangeSec) <= bpmMotionHoldSec);
     hostBpmMovingAtomic.store(isMoving, std::memory_order_relaxed);
 
-    return { hostTransportRunning, hostBpmNow, isMoving, hostBpmAvailable };
+    return { hostTransportRunning, hostBpmNow, isMoving, hostBpmAvailable, hostTransportStarted,
+             hostPositionAvailable, hostRecording, hostPlaying, hostPpqAvailable, ppqPosition };
 }
 
 void HostTempoTracker::resetMotion() noexcept

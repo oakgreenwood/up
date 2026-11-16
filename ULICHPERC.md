@@ -33,6 +33,19 @@ when behavior changes.
   realtime cache for per-MIDI-note sample-specific playback values.
 - `Source/Midi/MidiNoteActivityState.cpp`: fixed-size, lock-free handoff for
   per-MIDI-note UI activity velocities and last-played sample memory.
+- `Source/PluginProcessor.*` incoming note-on generations and `PluginEditor.*`
+  pending note checks: SHAKE return-input timeout and settings alert.
+- `Source/Midi/ShakeMidiState.h`: bounded cursor-trigger queue, generated note
+  scheduling and MIDI output for VST3/AU.
+- `Source/Midi/ShakeMidiTake.h`: fixed-slot live sample-MIDI take cache,
+  transport/idle boundaries and message-thread MIDI-file export.
+- `Source/Midi/VirtualMidiClient.*` and `VirtualMidiProtocol.h`: editor-only
+  virtual MIDI routing, local discovery/lease/stroke messages and shared protocol.
+- `integrations/virtual-midi/`: separate system MIDI helper, per-user installation
+  and cross-DAW setup; macOS CoreMIDI and Windows 11 MIDI Services.
+- `Source/UI/ShakeGesture.h`: message-thread cursor speed and reversal detection.
+- `Source/UI/AbletonMidiBridgeClient.*`: separate legacy message-thread ADD MIDI
+  request client; SHAKE does not use a DAW-specific transport companion.
 - `Source/UI/SampleGroupSelector.cpp`: bottom UI selector for choosing the
   currently edited sample group.
 - `Source/SampleLibrary/PercussionSampleLibrary.cpp`: embedded BinaryData
@@ -46,7 +59,9 @@ when behavior changes.
 - `Source/PercussionVoice.cpp`: note-start playback setup, velocity gain,
   warp playback paths, transient/sustain shaping, and per-sample rendering.
 - `Source/Tempo/HostTempoTracker.cpp`: host BPM/transport and BPM-motion
-  tracking.
+  tracking, plus optional PPQ for a take's original Arrangement position.
+- `Source/Tempo/HostRecordingCallbackReceiver.h`: narrow AU wrapper-to-processor
+  interface for retaining recording callback availability metadata.
 - `Source/Warp/WarpCachePrewarmer.cpp`: startup/state-restore preparation and recent
   warp-sample tracking, background BPM/pitch caches, atomic publication, and
   off-audio reclamation.
@@ -84,3 +99,5 @@ when behavior changes.
 - `Source/SampleMetadata.cpp`: transient JSON lookup and parsing.
 - `CMakeLists.txt`: plugin target, formats, BinaryData resources, JUCE, and
   RubberBand integration.
+- `cmake/EnableAuRecording.cmake`: generated AUv2 wrapper transport overlay for
+  the host recording callback missing from the pinned JUCE wrapper.

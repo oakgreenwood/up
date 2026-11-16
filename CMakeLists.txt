@@ -69,6 +69,11 @@ CPMAddPackage(
     GIT_TAG 501c07674e1ad693085a7e7c398f205c2677f5da
 )
 
+if (APPLE)
+    include(cmake/EnableAuRecording.cmake)
+    ulichperc_enable_au_recording()
+endif()
+
 # Make sure you include any new source files here
 set(SourceFiles
         Source/PluginEditor.cpp
@@ -83,6 +88,8 @@ set(SourceFiles
         Source/UI/TempoSyncButtonRenderer.cpp
         Source/UI/CustomLookAndFeel.h
         Source/UI/CustomLookAndFeel.cpp
+        Source/UI/AbletonMidiBridgeClient.h
+        Source/UI/AbletonMidiBridgeClient.cpp
         Source/UI/SampleGroupSelector.h
         Source/UI/SampleGroupSelector.cpp
         Source/Parameters/PluginParameters.h
@@ -93,6 +100,9 @@ set(SourceFiles
         Source/Parameters/SampleSpecificRealtimeCache.cpp
         Source/Midi/MidiNoteActivityState.h
         Source/Midi/MidiNoteActivityState.cpp
+        Source/Midi/VirtualMidiProtocol.h
+        Source/Midi/VirtualMidiClient.h
+        Source/Midi/VirtualMidiClient.cpp
         Source/Effects/PsolaFormantShifter.h
         Source/Effects/PsolaFormantShifter.cpp
         Source/Effects/FormantShifter.h
@@ -117,6 +127,7 @@ set(SourceFiles
         Source/SampleLibrary/PercussionSampleLibrary.cpp
         Source/Tempo/HostTempoTracker.h
         Source/Tempo/HostTempoTracker.cpp
+        Source/Tempo/HostRecordingCallbackReceiver.h
         Source/Warp/WarpCachePrewarmer.h
         Source/Warp/WarpCachePrewarmer.cpp
         Source/Playback/NoteStartDeclicker.h
@@ -156,7 +167,7 @@ juce_add_plugin(${PROJECT_NAME}
         COMPANY_NAME shroomnoise
         IS_SYNTH TRUE
         NEEDS_MIDI_INPUT TRUE
-        NEEDS_MIDI_OUTPUT FALSE
+        NEEDS_MIDI_OUTPUT TRUE
         IS_MIDI_EFFECT FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
         JUCE_VST3_CAN_REPLACE_VST2 FALSE
@@ -164,7 +175,7 @@ juce_add_plugin(${PROJECT_NAME}
         PLUGIN_MANUFACTURER_CODE Tap1
         PLUGIN_CODE Reg0
         FORMATS ${PLUGIN_FORMATS}
-        PRODUCT_NAME "ulichpercs"
+        PRODUCT_NAME "ulichpercsnewnew"
         VST3_CATEGORIES Instrument
 )
 
@@ -250,3 +261,44 @@ target_link_libraries(${PROJECT_NAME}
         ${PROJECT_NAME}Data
         ${PROJECT_NAME}NoiseData
 )
+
+# A separate process owns system MIDI devices. No MIDI Services SDK or helper
+# lifetime is introduced into the VST3/AU audio process. On Windows, provision
+# JUCE's compatible CppWinRT/MIDI Services packages before enabling this target.
+option(ULICHPERC_BUILD_MIDI_COMPONENT "Build the system virtual MIDI component." ON)
+if (ULICHPERC_BUILD_MIDI_COMPONENT)
+    set(_ulichperc_needs_windows_midi FALSE)
+    if (WIN32)
+        set(_ulichperc_needs_windows_midi TRUE)
+    endif()
+    juce_add_gui_app(ULICHPERCMidi
+        PRODUCT_NAME "ULICHPERC MIDI"
+        COMPANY_NAME shroomnoise
+        BUNDLE_ID com.shroomnoise.ulichpercs.midi
+        VERSION 1.0.0
+        NEEDS_WINDOWS_MIDI_SERVICES ${_ulichperc_needs_windows_midi}
+        PLIST_TO_MERGE "<plist version=\"1.0\"><dict><key>LSUIElement</key><true/></dict></plist>"
+    )
+    target_sources(ULICHPERCMidi PRIVATE
+        integrations/virtual-midi/HelperMain.cpp
+        Source/Midi/VirtualMidiProtocol.h
+    )
+    target_include_directories(ULICHPERCMidi PRIVATE Source)
+    target_compile_definitions(ULICHPERCMidi PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 NOMINMAX=1)
+    target_link_libraries(ULICHPERCMidi PRIVATE
+        juce::juce_audio_devices juce::juce_gui_basics
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+    install(TARGETS ULICHPERCMidi
+        BUNDLE DESTINATION virtual-midi/bin COMPONENT VirtualMidi
+        RUNTIME DESTINATION virtual-midi/bin COMPONENT VirtualMidi)
+    install(FILES integrations/virtual-midi/README.md
+        DESTINATION virtual-midi COMPONENT VirtualMidi)
+    if (APPLE)
+        install(PROGRAMS integrations/virtual-midi/install-macos.command
+            DESTINATION virtual-midi COMPONENT VirtualMidi)
+    elseif (WIN32)
+        install(FILES integrations/virtual-midi/install-windows.ps1
+            DESTINATION virtual-midi COMPONENT VirtualMidi)
+    endif()
+endif()

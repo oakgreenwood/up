@@ -6,3 +6,5 @@ test.exe
 com.apple.DeveloperTools
 build_debug_vst3.sh
 validation-logs/
+# Generated installation/distribution files from cmake --install --prefix stage.
+/stage/

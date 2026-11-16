@@ -1,14 +1,18 @@
 #include "PercussionSynthesiser.h"
+#include "PercussionVoice.h"
 
 #include <algorithm>
 #include <cmath>
 
 void PercussionSynthesiser::renderAudioRange(juce::AudioBuffer<float>& output, int start, int count)
 {
-    if (count <= 0 || output.getNumChannels() == 0)
+    if (count <= 0)
         return;
     const juce::ScopedLock guard(lock);
-    renderVoices(output, start, count);
+    if (lastPlayedMidiNote >= 0)
+        idleFrames = juce::jmin(sequenceTimeoutFrames, idleFrames + static_cast<uint64_t>(count));
+    if (output.getNumChannels() > 0)
+        renderVoices(output, start, count);
 }
 
 void PercussionSynthesiser::dispatchMidi(const juce::MidiMessage& message)
@@ -19,15 +23,28 @@ void PercussionSynthesiser::dispatchMidi(const juce::MidiMessage& message)
 
 void PercussionSynthesiser::clearLayerMappings()
 {
+    downNoteRoots.fill(-1);
     registeredByMidiNote.clear();
     noteLayers.clear();
-    lastVariationIndexByNote.clear();
+    resetPlaybackSequence();
+}
+
+void PercussionSynthesiser::resetPlaybackSequence() noexcept
+{
+    lastPlayedMidiNote = -1;
+    nextDirection = SampleDirection::up;
+    idleFrames = 0;
+    lastPlayedTimeMs = 0.0;
+    const double rate = getSampleRate();
+    const double safeRate = std::isfinite(rate) && rate >= 1.0 && rate <= 768000.0 ? rate : 44100.0;
+    sequenceTimeoutFrames = static_cast<uint64_t>(std::ceil(safeRate * 4.0));
 }
 
 void PercussionSynthesiser::registerLayeredSound(PercussionSound* sound,
                                               int midiNote,
                                               int velocityGroupIndex,
-                                              int variationIndex)
+                                              int variationIndex,
+                                              SampleDirection direction)
 {
     if (sound == nullptr || midiNote < 0 || midiNote > 127)
         return;
@@ -36,7 +53,9 @@ void PercussionSynthesiser::registerLayeredSound(PercussionSound* sound,
     item.sound = sound;
     item.velocityGroupIndex = juce::jmax(1, velocityGroupIndex);
     item.variationIndex = juce::jmax(1, variationIndex);
+    item.direction = direction;
     sound->setVariationIndex(item.variationIndex);
+    sound->setDirection(direction);
 
     registeredByMidiNote[midiNote].push_back(item);
 }
@@ -77,7 +96,7 @@ std::pair<int, int> PercussionSynthesiser::computeVelocityRange(int groupIndex, 
 void PercussionSynthesiser::finalizeLayerMappings()
 {
     noteLayers.clear();
-    lastVariationIndexByNote.clear();
+    resetPlaybackSequence();
 
     for (auto& entry : registeredByMidiNote)
     {
@@ -119,12 +138,12 @@ void PercussionSynthesiser::finalizeLayerMappings()
                                                  groupCount,
                                                  group.minVelocity,
                                                  group.maxVelocity);
-                group.sounds.push_back(item.sound);
+                group.pools[static_cast<size_t>(item.direction)].sounds.push_back(item.sound);
+                layers.hasDirectionalSamples |= item.direction != SampleDirection::none;
             }
         }
 
         noteLayers[midiNote] = std::move(layers);
-        lastVariationIndexByNote[midiNote] = std::vector<int>(noteLayers[midiNote].groups.size(), -1);
     }
 }
 
@@ -151,90 +170,153 @@ int PercussionSynthesiser::chooseGroupForVelocity(const NoteLayers& layers, int 
     return (int) layers.groups.size() - 1;
 }
 
-PercussionSound* PercussionSynthesiser::chooseVariation(int midiNote,
-                                                      const NoteLayers& layers,
-                                                      int preferredGroupIdx) noexcept
+PercussionSynthesiser::VariationPool* PercussionSynthesiser::findNearestPool(
+    NoteLayers& layers, int preferredGroupIdx, SampleDirection direction) noexcept
 {
     if (preferredGroupIdx < 0 || preferredGroupIdx >= (int) layers.groups.size())
         return nullptr;
 
-    int resolvedGroupIdx = preferredGroupIdx;
-    const std::vector<PercussionSound*>* pool = &layers.groups[(size_t) preferredGroupIdx].sounds;
+    const auto directionIndex = static_cast<size_t>(direction);
+    auto& preferred = layers.groups[(size_t) preferredGroupIdx].pools[directionIndex];
+    if (!preferred.sounds.empty())
+        return &preferred;
 
-    if (pool->empty())
+    for (int delta = 1; delta < (int) layers.groups.size(); ++delta)
     {
-        for (int delta = 1; delta < (int) layers.groups.size(); ++delta)
+        const int up = preferredGroupIdx + delta;
+        if (up < (int) layers.groups.size())
         {
-            const int up = preferredGroupIdx + delta;
-            if (up >= 0 && up < (int) layers.groups.size())
-            {
-                const auto& upPool = layers.groups[(size_t) up].sounds;
-                if (!upPool.empty())
-                {
-                    resolvedGroupIdx = up;
-                    pool = &upPool;
-                    break;
-                }
-            }
+            auto& pool = layers.groups[(size_t) up].pools[directionIndex];
+            if (!pool.sounds.empty())
+                return &pool;
+        }
 
-            const int down = preferredGroupIdx - delta;
-            if (down >= 0 && down < (int) layers.groups.size())
-            {
-                const auto& downPool = layers.groups[(size_t) down].sounds;
-                if (!downPool.empty())
-                {
-                    resolvedGroupIdx = down;
-                    pool = &downPool;
-                    break;
-                }
-            }
+        const int down = preferredGroupIdx - delta;
+        if (down >= 0)
+        {
+            auto& pool = layers.groups[(size_t) down].pools[directionIndex];
+            if (!pool.sounds.empty())
+                return &pool;
         }
     }
 
-    if (pool->empty())
+    return nullptr;
+}
+
+PercussionSound* PercussionSynthesiser::chooseVariation(NoteLayers& layers,
+                                                       int preferredGroupIdx,
+                                                       SampleDirection direction) noexcept
+{
+    auto* pool = findNearestPool(layers, preferredGroupIdx, direction);
+    if (pool == nullptr && direction != SampleDirection::none)
+    {
+        // Exhaust matching directions across velocity layers before falling
+        // back to ordinary samples, then to the opposite direction.
+        pool = findNearestPool(layers, preferredGroupIdx, SampleDirection::none);
+        if (pool == nullptr)
+            pool = findNearestPool(layers, preferredGroupIdx,
+                direction == SampleDirection::up ? SampleDirection::down : SampleDirection::up);
+    }
+
+    if (pool == nullptr)
         return nullptr;
 
-    int choice = rng.nextInt((int) pool->size());
-
-    auto& noteLast = lastVariationIndexByNote[midiNote];
-    if ((int) noteLast.size() < (int) layers.groups.size())
-        noteLast.resize(layers.groups.size(), -1);
-
-    int& lastChoice = noteLast[(size_t) resolvedGroupIdx];
-    if (pool->size() > 1 && choice == lastChoice && rng.nextDouble() < 0.65)
+    auto& sounds = pool->sounds;
+    int choice = rng.nextInt((int) sounds.size());
+    if (sounds.size() > 1 && choice == pool->lastChoice && rng.nextDouble() < 0.65)
     {
-        int reroll = rng.nextInt((int) pool->size() - 1);
-        if (reroll >= lastChoice)
+        int reroll = rng.nextInt((int) sounds.size() - 1);
+        if (reroll >= pool->lastChoice)
             ++reroll;
         choice = reroll;
     }
 
-    lastChoice = choice;
-    return (*pool)[(size_t) choice];
+    pool->lastChoice = choice;
+    return sounds[(size_t) choice];
+}
+
+void PercussionSynthesiser::rememberPlayedGroup(int midiNote, SampleDirection direction, double timeMs) noexcept
+{
+    lastPlayedMidiNote = midiNote;
+    nextDirection = direction == SampleDirection::up ? SampleDirection::down : SampleDirection::up;
+    idleFrames = 0;
+    lastPlayedTimeMs = timeMs;
+}
+
+juce::SynthesiserVoice* PercussionSynthesiser::findVoiceToSteal(
+    juce::SynthesiserSound* soundToPlay, int midiChannel, int midiNoteNumber) const
+{
+    if (const auto* sound = dynamic_cast<const PercussionSound*>(soundToPlay))
+        if (sound->getDirection() != SampleDirection::none)
+        {
+            const auto opposite = sound->getDirection() == SampleDirection::up
+                ? SampleDirection::down : SampleDirection::up;
+            // Preserve opposite-direction fades whenever another victim exists.
+            juce::SynthesiserVoice* oldest = nullptr;
+            for (auto* voice : voices)
+                if (auto* percussion = dynamic_cast<PercussionVoice*>(voice))
+                    if (!percussion->isPlayingDirectionalSample(getGroupRootNote(midiNoteNumber), opposite)
+                        && voice->canPlaySound(soundToPlay))
+                        if (oldest == nullptr || voice->wasStartedBefore(*oldest))
+                            oldest = voice;
+            if (oldest != nullptr)
+                return oldest;
+        }
+
+    return juce::Synthesiser::findVoiceToSteal(soundToPlay, midiChannel, midiNoteNumber);
 }
 
 void PercussionSynthesiser::noteOn(int midiChannel, int midiNoteNumber, float velocity)
 {
     const juce::ScopedLock sl(lock);
 
-    PercussionSound* selected = nullptr;
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    if (lastPlayedMidiNote >= 0
+        && (idleFrames >= sequenceTimeoutFrames || nowMs - lastPlayedTimeMs >= 4000.0))
+        resetPlaybackSequence();
 
-    const auto it = noteLayers.find(midiNoteNumber);
+    PercussionSound* selected = nullptr;
+    SampleDirection direction = SampleDirection::none;
+
+    const int rootNote = getGroupRootNote(midiNoteNumber);
+    const auto it = noteLayers.find(rootNote);
     if (it != noteLayers.end())
     {
         const int midiVelocity = velocityToMidi(velocity);
         const int groupIdx = chooseGroupForVelocity(it->second, midiVelocity);
-        selected = chooseVariation(midiNoteNumber, it->second, groupIdx);
+        if (it->second.hasDirectionalSamples)
+            direction = midiNoteNumber == rootNote ? SampleDirection::up : SampleDirection::down;
+        selected = chooseVariation(it->second, groupIdx, direction);
     }
 
     if (selected != nullptr)
     {
+        const auto actualDirection = selected->getDirection();
+        const auto opposite = actualDirection == SampleDirection::up ? SampleDirection::down
+            : (actualDirection == SampleDirection::down ? SampleDirection::up : SampleDirection::none);
         for (auto* voice : voices)
             if (voice->getCurrentlyPlayingNote() == midiNoteNumber && voice->isPlayingChannel(midiChannel))
+            {
+                // An opposite-direction voice retains its output until the new hit
+                // reaches the same effect latency, then fades independently.
+                if (opposite != SampleDirection::none)
+                    if (auto* percussion = dynamic_cast<PercussionVoice*>(voice))
+                        if (percussion->isPlayingDirectionalSample(rootNote, opposite))
+                            continue;
                 stopVoice(voice, 1.0f, true);
+            }
 
         if (auto* voice = findFreeVoice(selected, midiChannel, midiNoteNumber, isNoteStealingEnabled()))
+        {
+            if (opposite != SampleDirection::none)
+                for (auto* activeVoice : voices)
+                    if (activeVoice != voice)
+                        if (auto* percussion = dynamic_cast<PercussionVoice*>(activeVoice))
+                            if (percussion->isPlayingDirectionalSample(rootNote, opposite))
+                                percussion->fadeOutForOppositeSample();
             startVoice(voice, selected, midiChannel, midiNoteNumber, velocity);
+            rememberPlayedGroup(rootNote, direction, nowMs);
+        }
         return;
     }
 
@@ -248,7 +330,10 @@ void PercussionSynthesiser::noteOn(int midiChannel, int midiNoteNumber, float ve
                     stopVoice(voice, 1.0f, true);
 
             if (auto* voice = findFreeVoice(sound, midiChannel, midiNoteNumber, isNoteStealingEnabled()))
+            {
                 startVoice(voice, sound, midiChannel, midiNoteNumber, velocity);
+                rememberPlayedGroup(midiNoteNumber, SampleDirection::none, nowMs);
+            }
         }
     }
 }

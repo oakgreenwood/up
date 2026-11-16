@@ -283,6 +283,11 @@ namespace PluginParameters
             juce::NormalisableRange<float>(0.0f, 300.0f, 1.0f), 0.0f));
         layout.add(std::make_unique<juce::AudioParameterBool>(
             sampleLoopTapeModeId, "Sample speed and pitch", false));
+        // Append the host-readable routing token without moving existing slots.
+        // This is deliberately outside sampleSpecificParameters and DSP caches.
+        layout.add(std::make_unique<juce::AudioParameterInt>(
+            juce::ParameterID { abletonLinkId, 1 }, abletonLinkName,
+            0, abletonLinkMaximum, 0));
         return layout;
     }
 }

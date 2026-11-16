@@ -14,6 +14,8 @@ public:
 
     // Configure only during processor construction, before audio callbacks.
     void enableSampleNote(int midiNote) noexcept;
+    bool isSampleNote(int midiNote) const noexcept
+    { return midiNote >= 0 && midiNote < midiNoteCount && sampleNotes[static_cast<size_t>(midiNote)]; }
     void reset() noexcept;
     void handleMidiMessage(const juce::MidiMessage& message) noexcept;
     float getVelocityForMidiNote(int midiNote) const noexcept;

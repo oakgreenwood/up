@@ -71,6 +71,25 @@ void PercussionVoice::stopNote(float /*velocity*/, bool allowTailOff)
 void PercussionVoice::pitchWheelMoved(int) {}
 void PercussionVoice::controllerMoved(int, int) {}
 
+bool PercussionVoice::isPlayingDirectionalSample(int midiNote, SampleDirection direction) const noexcept
+{
+    return direction != SampleDirection::none && currentSound != nullptr
+        && currentSound->getMidiRootNote() == midiNote && currentSound->getDirection() == direction;
+}
+
+void PercussionVoice::fadeOutForOppositeSample() noexcept
+{
+    // Further hits must not postpone a fade that is already scheduled.
+    if (currentSound != nullptr && currentSound->getDirection() != SampleDirection::none
+        && chokeFadeRemaining == 0)
+    {
+        const size_t index = currentSound->getDirection() == SampleDirection::up ? 0 : 1;
+        chokeDelayRemaining = chokeLatencySamples;
+        chokeFadeRemaining = chokeFadeSamples[index];
+        chokeFadeScale = chokeFadeScales[index];
+    }
+}
+
 void PercussionVoice::prepareRealtimeWarpResources(double playbackSampleRate, int samplesPerBlock)
 {
     adsr.reset();
@@ -78,8 +97,16 @@ void PercussionVoice::prepareRealtimeWarpResources(double playbackSampleRate, in
     formantShifter.prepare(playbackSampleRate);
     formantColouration.prepare(playbackSampleRate);
     equaliser.prepare(playbackSampleRate);
-    noiseTriggerDelay.prepare(FormantShifter::latencySamples
-        + PsolaFormantShifter::latencyForSampleRate(playbackSampleRate));
+    chokeLatencySamples = FormantShifter::latencySamples
+        + PsolaFormantShifter::latencyForSampleRate(playbackSampleRate);
+    noiseTriggerDelay.prepare(chokeLatencySamples);
+    constexpr std::array<double, 2> fadeSeconds { 0.04, 0.13 };
+    for (size_t i = 0; i < fadeSeconds.size(); ++i)
+    {
+        chokeFadeSamples[i] = juce::jmax(1, static_cast<int>(std::round(
+            SampleEqualiser::validSampleRate(playbackSampleRate) * fadeSeconds[i])));
+        chokeFadeScales[i] = 1.0f / static_cast<float>(juce::jmax(1, chokeFadeSamples[i] - 1));
+    }
     formantDrainSamples = FormantShifter::tailSamples
                           + PsolaFormantShifter::tailForSampleRate(playbackSampleRate);
     realtimeWarpPlayer.prepare(playbackSampleRate, 2, samplesPerBlock);
@@ -111,8 +138,11 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
     while (rendered < numSamples && currentSound != nullptr)
     {
         const bool draining = sourceFinished;
-        const int count = juce::jmin(FormantShifter::hopSize, numSamples - rendered,
-                                    draining ? formantTailRemaining : FormantShifter::hopSize);
+        const bool choking = chokeFadeRemaining > 0;
+        int count = juce::jmin(FormantShifter::hopSize, numSamples - rendered,
+                              draining ? formantTailRemaining : FormantShifter::hopSize);
+        if (choking)
+            count = juce::jmin(count, chokeDelayRemaining > 0 ? chokeDelayRemaining : chokeFadeRemaining);
         voiceScratch.clear();
         noiseHits.fill(0.0f);
         if (!draining)
@@ -136,7 +166,20 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
             }
             applySamplePan(left[i], right[i], stereoOutput);
             equaliser.process(left[i], right[i]);
-            const float noiseHit = noiseTriggerDelay.process(noiseHits[static_cast<size_t>(i)]);
+            float chokeGain = 1.0f;
+            if (choking)
+            {
+                if (chokeDelayRemaining > 0)
+                    --chokeDelayRemaining;
+                else
+                {
+                    const float remaining = static_cast<float>(--chokeFadeRemaining) * chokeFadeScale;
+                    chokeGain = remaining * remaining;
+                    left[i] *= chokeGain;
+                    right[i] *= chokeGain;
+                }
+            }
+            const float noiseHit = noiseTriggerDelay.process(noiseHits[static_cast<size_t>(i)]) * chokeGain;
             if (noiseSidechain != nullptr && noiseHit > 0.0f)
                 noiseSidechain->addHit(spectrumNote, startSample + rendered + i, noiseHit);
             if (sampleSpectrum != nullptr)
@@ -147,6 +190,12 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
                     ch == 0 ? left[i] : (ch == 1 ? right[i] : 0.5f * (left[i] + right[i])));
         }
         rendered += count;
+        if (choking && chokeFadeRemaining == 0)
+        {
+            adsr.reset();
+            clearActivePlayback();
+            break;
+        }
         if (draining)
         {
             formantTailRemaining -= count;
@@ -355,6 +404,7 @@ void PercussionVoice::publishPlayhead() noexcept
 
 void PercussionVoice::beginPlayback(float velocity)
 {
+    chokeDelayRemaining = chokeFadeRemaining = 0;
     sourceFinished = false;
     equaliserTailReserved = false;
     formantTailRemaining = 0;
@@ -519,6 +569,7 @@ void PercussionVoice::beginPlayback(float velocity)
 
 void PercussionVoice::clearActivePlayback()
 {
+    chokeDelayRemaining = chokeFadeRemaining = 0;
     playheadSnapshot.store(0, std::memory_order_relaxed);
     playheadSequence = 0;
     sourceFinished = false;
