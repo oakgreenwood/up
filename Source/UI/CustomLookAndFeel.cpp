@@ -57,10 +57,6 @@ CustomLookAndFeel::CustomLookAndFeel()
     setColour(juce::PopupMenu::highlightedTextColourId, PluginUI::noisePanelBackground);
     rotarySliders.reserve(10);
     rotarySliders.push_back(RotarySliderEntry {
-        PluginUI::noiseReleaseSliderId,
-        PluginUI::RotarySliderRenderer(makeSustainSliderConfig())
-    });
-    rotarySliders.push_back(RotarySliderEntry {
         PluginUI::rzhavSliderId,
         PluginUI::RotarySliderRenderer(makeRzhavSliderConfig())
     });
@@ -142,7 +138,8 @@ void CustomLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int wi
                                         juce::Slider::SliderStyle style, juce::Slider& slider)
 {
     const bool bipolar = slider.getComponentID() == PluginUI::noiseModulationSliderId;
-    if (!bipolar && slider.getComponentID() != PluginUI::noiseGainSliderId)
+    if (!bipolar && slider.getComponentID() != PluginUI::noiseGainSliderId
+        && slider.getComponentID() != PluginUI::noiseReleaseSliderId)
     {
         juce::LookAndFeel_V4::drawLinearSlider(g, x, y, width, height,
                                                sliderPos, minSliderPos, maxSliderPos, style, slider);

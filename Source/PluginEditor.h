@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "PluginProcessor.h"
-#include "UI/SampleGroupSelector.h"
 #include "UI/SampleEqualiserEditor.h"
+#include "UI/SampleGroupSelector.h"
 #include "UI/SampleWaveformEditor.h"
 #include "UI/NoiseWaveformEditor.h"
 #include "UI/ShakeGesture.h"
@@ -140,11 +140,8 @@ public:
     juce::ComboBox noiseTriggerSelector;
     KeyboardStepSlider noiseModulationSlider;
     juce::Label noiseModulationLabel;
-    ImageKnobSlider noiseReleaseSlider;
+    KeyboardStepSlider noiseReleaseSlider;
     juce::Label noiseReleaseLabel;
-    NumericValueInput noiseReleaseValueInput {
-        noiseReleaseSlider, "Noise release value", NumericValueInput::Validation::signedDecimal, " ms"
-    };
     ImageKnobSlider sampleGainSlider;
     ImageKnobSlider samplePunchSlider;
     ImageKnobSlider samplePitchSlider;
@@ -211,7 +208,6 @@ public:
     juce::TextButton sampleBeatSnapButton { "BEAT SNAP" };
     juce::TextButton applyToAllButton { "APPLY TO ALL" };
     juce::ComboBox applyToAllEffectSelector;
-    SampleGroupSelector sampleGroupSelector;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> rzhavAttachment;
 
     // std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bitDepthAttachment;
@@ -272,8 +268,6 @@ private:
     void parameterValueChanged(int parameterIndex, float newValue) override;
     void parameterGestureChanged(int parameterIndex, bool gestureIsStarting) override;
     float getParameterDefaultValue(const juce::String& parameterId) const;
-    void rebuildSampleGroupActivityMap();
-    void selectSampleGroupForEditing(int groupIndex);
     void timerCallback() override;
 
     // This reference is provided as a quick way for your editor to
@@ -323,11 +317,30 @@ private:
     {
         explicit ShakeMouseListener(AudioPluginAudioProcessorEditor& editor) : owner(editor) {}
         void mouseMove(const juce::MouseEvent& event) override { owner.handleShakeMouseMove(event); }
-        void mouseDown(const juce::MouseEvent&) override { owner.shakeGesture.rebase(); }
+        void mouseDown(const juce::MouseEvent& event) override
+        {
+            owner.shakeGesture.rebase();
+            if (!owner.shakeAreaOpen || owner.shakeAreaSurface == nullptr)
+                return;
+            const auto position = event.getEventRelativeTo(&owner).position;
+            if (!owner.shakeAreaSurface->getBounds().toFloat().contains(position))
+                owner.setShakeAreaVisible(false);
+            else if (event.mods.isLeftButtonDown()
+                     && !owner.trackMidiButton.getBounds().toFloat().contains(position))
+            {
+                owner.shakeButton.setToggleState(!owner.shakeButton.getToggleState(),
+                                                 juce::dontSendNotification);
+                owner.shakeGesture.reset();
+                owner.updateShakeMode();
+            }
+        }
         void mouseDrag(const juce::MouseEvent&) override { owner.shakeGesture.rebase(); }
         void mouseExit(const juce::MouseEvent& event) override
         {
-            if (!owner.getLocalBounds().toFloat().contains(event.getEventRelativeTo(&owner).position))
+            const auto position = event.getEventRelativeTo(&owner).position;
+            if (!owner.getLocalBounds().toFloat().contains(position)
+                || (owner.shakeAreaOpen && owner.shakeAreaSurface != nullptr
+                    && !owner.shakeAreaSurface->getBounds().toFloat().contains(position)))
                 owner.shakeGesture.rebase();
         }
         AudioPluginAudioProcessorEditor& owner;
@@ -346,12 +359,28 @@ private:
     std::array<ShakeMidiInputCheck, 128> shakeMidiInputChecks {};
     bool shakeMidiInputMonitoring = false;
     bool shakeMidiInputWarningShown = false;
+    SampleGroupSelector sampleGrid;
+    bool shakeAreaOpen = false;
+    std::unique_ptr<juce::Component> shakeAreaSurface, shakeAreaCloseButton;
+    juce::Label shakeAreaInstruction;
+    struct ShakeStartButton final : juce::TextButton
+    {
+        ShakeStartButton() : juce::TextButton("CLICK TO START") {}
+        void paintButton(juce::Graphics& g, bool, bool) override
+        {
+            g.setColour(juce::Colours::black);
+            g.setFont(juce::Font(juce::FontOptions(22.0f)));
+            g.drawText(getButtonText(), getLocalBounds(), juce::Justification::centred);
+        }
+    } shakeAreaStartButton;
+    void setShakeAreaVisible(bool visible);
+    void updateMainPanelVisibility();
+    void selectSampleGroupForEditing(int groupIndex);
     SampleEqualiserEditor equaliserEditor;
     SampleWaveformEditor sampleWaveformEditor;
     NoiseWaveformEditor noiseWaveform;
     std::unique_ptr<juce::Component> noisePanelSurface;
     std::unique_ptr<juce::FileChooser> noiseFileChooser;
-    juce::TextButton editSamplesButton { "EDIT SAMPLES" };
     std::unique_ptr<CustomLookAndFeel> customLNF;
     std::vector<SampleSpecificSliderBinding> sampleSpecificSliderBindings;
     std::vector<SampleSpecificEditBinding> sampleSpecificEditBindings;
@@ -361,8 +390,6 @@ private:
     juce::RangedAudioParameter* pendingApplyToAllParameter = nullptr;
     bool ignoreSampleSpecificEdits = false;
     bool ignoreSampleTrimInputChanges = false;
-    std::array<int, AudioPluginAudioProcessor::midiNoteActivityCount> sampleGroupIndexByMidiNote {};
-    std::array<uint32_t, AudioPluginAudioProcessor::midiNoteActivityCount> observedMidiNoteActivityGenerations {};
     bool sampleEffectsModalOpen = false;
     bool effectsTabSelected = true;
     bool noiseFileDragActive = false;

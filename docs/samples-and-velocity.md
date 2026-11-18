@@ -23,10 +23,12 @@ numeric gaps and existing pitch-slot order. `midiNote = 48 + mappedNoteIndex - 1
 continues to identify the group's first note. A directional pair extending past
 MIDI 127 is omitted entirely. Existing MIDI clips may need remapping.
 
-The selector uses the same map: one group per `(noteIndex, pitchIndex)`, ignoring
-velocity/variation/direction. `1_v1_n2` and `1_v1_n3` share an item; `4_v1_n1_p1` and
-`4_v1_n1_p2` have separate items. The SAMPLE tab's start/end trim belongs to
-that same group. The start maps onto each layer/variation's own length; the end
+Playback/editing uses one group per `(noteIndex, pitchIndex)`, ignoring
+velocity/variation/direction. The UI grid combines all pitch groups with the
+same `noteIndex` into one cell and displays all mapped MIDI notes, including
+up/down pairs. `1_v1_n2` and `1_v1_n3` share a cell; `4_v1_n1_p1` and
+`4_v1_n1_p2` also share a cell but retain independent editing groups. The SAMPLE
+tab's start/end trim belongs to the selected pitch group. The start maps onto each layer/variation's own length; the end
 removes the same amount of time from each source's end. Its waveform
 uses the lowest numbered variation in the velocity layer selected by MIDI
 velocity 64, or the nearest populated layer if that one is empty.

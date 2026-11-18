@@ -5,21 +5,26 @@ attachments, automation, or persistence, see [parameters and state](parameters-a
 Audio/message-thread activity handoff changes require the
 [realtime audio audit](../.agents/skills/realtime-audio-audit/SKILL.md).
 
+The plugin editor opens at 1320 x 670 pixels with 18-pixel inner padding.
+The main editor background is `#CDD0C3`.
+
 ## Background Noise
 
-The global page groups noise in a `NOISE RYTHM` panel, following the supplied
-reference's placement, with a transparent panel over the editor background, a
+The global page groups noise in a `NOISE RYTHM` panel at the bottom-right
+of the padded editor area, with a transparent panel over the editor background, a
 black heading/border, #6B6D68 uppercase captions, black waveform/text and
 #8E8B8B slider tracks.
 Inside the frame, controls run vertically: SOURCE dropdown, waveform, TRIGGER
-dropdown, VOLUME, then PUMP/FOLLOW. A single Release knob sits centered along
-the bottom with an editable integer-ms readout. Attack and Rise controls have
+dropdown, a shared VOLUME / RELEASE slider row split into equal widths with an
+18-pixel gap, then PUMP/FOLLOW. Release shows integer milliseconds in its hover/drag
+popup, matching Volume's interaction. Attack and Rise controls have
 been removed. The other global controls remain to its left. The former global
 Tempo sync button is removed; loop tempo and playback mode are in the SAMPLE tab.
-The panel is two-thirds of its former width (399 px in the 900 px editor),
-with its left edge and height unchanged. Dropdowns, waveform and slider tracks
-use the narrower bounds; the centered Release knob remains 47x47 px, preserving
-its image proportions. Text sizes are unchanged.
+The panel takes 30% of the padded area's width and 60% of its height
+(385 x 380 px at the default editor size). Compact vertical spacing and a
+40-pixel-high waveform fit its controls inside the shorter panel. Text sizes
+are unchanged. The sample grid occupies the bottom centre with a 30-pixel gap
+between its right edge and the noise panel.
 
 Source starts with an `Upload file` action, then lists every embedded `noise/*.wav` without its extension, followed by
 one entry for each custom noise. Empty reserved host slots are omitted. Both dropdowns
@@ -27,7 +32,7 @@ use bold black text, simple chevrons and no box/background; long source names
 truncate with an ellipsis. Trigger defaults to All samples and includes each
 numbered sample group. Volume fills its thick track from the left; modulation
 fills from centre toward the thumb, with PUMP/FOLLOW captions at opposite ends.
-Both sliders have black rounded vertical handles.
+All three sliders have black rounded vertical handles; Release fills from the left.
 
 `Upload file` opens an asynchronous native file picker with multi-selection and
 an extension filter from the same registered audio decoders used by noise imports.
@@ -96,8 +101,8 @@ to about 84% effective depth. Slider position/fill still represents the raw save
 amount. The separate Follow trigger boost
 uses a square-root response, reaching its ceiling 30% of the way from centre to
 full right (+15 on a -50..+50 scale); full right reaches silence between hits
-after release. Double-click returns to neutral. Release uses the existing image
-knob and editable integer-ms readout, ranging 1..2000 ms with 150 ms default and
+after release. Double-click returns to neutral. Release uses a horizontal
+slider with an integer-ms popup, ranging 1..2000 ms with 150 ms default and
 double-click reset. Attack is fixed at 5 ms and Follow Rise at +12 dB, including
 for older projects; neither has a knob or value readout. Release returns noise
 in Pump and fades it out in Follow.
@@ -111,7 +116,36 @@ for the 2 ms edit fades and region-boundary crossfade.
 
 ### Cursor Shake Mode
 
-When Edit Samples is open for a group containing `_u` or `_d` sounds, `SHAKE`
+The grid cell's LP button opens a dedicated shake area for its first directional
+pitch slot. Ordinary cells disable LP. The opaque `#D9D9D9` area replaces the
+sample grid, the 30-pixel section gap, and the noise panel, using their combined
+bounds. The other global effects remain visible to its left. Opening the area
+always disables shake first; it does not immediately claim the MIDI helper or
+start generating notes.
+
+Centred `MOVE CURSOR TO SHAKE` text is 30 px bold and `#716C6C` while disabled.
+The smaller 22 px black `CLICK TO START` text beneath it is a prompt.
+Clicking anywhere inside the area except TRACK MIDI toggles shaking, including
+clicks on either text. Enabling shake turns the instruction black and changes the prompt
+to `CLICK TO STOP`. Clicking again disables new shake gestures, restores the
+grey instruction and returns the prompt to `CLICK TO START`; the area stays open.
+A `TRACK MIDI: ON` / `TRACK MIDI: OFF` button sits at the area's bottom
+centre and uses the existing saved routing choice. Clicking it also enables
+shake if disabled; an already enabled session stays enabled.
+
+A cross above the area's top-right corner closes it. Clicking anywhere outside
+the area within the editor also closes it, including over other controls.
+Closing or hiding the editor stops new gestures, invalidates the old target,
+releases the helper lease and pending input checks, and restores the grid/noise
+panel. Existing sounding voices retain their normal tails. Reopening starts
+disabled again. The grid's selected page is retained.
+
+While this area is open, cursor shaking is confined to its bounds and excludes
+the TRACK MIDI control. Leaving the area rebases the gesture so re-entry does
+not turn the pointer jump into a stroke. Mouse-button drags do not shake.
+ED opens the separate sample editor instead.
+
+When the sample editor is open for a group containing `_u` or `_d` sounds, `SHAKE`
 appears at the top right, on both tabs. It defaults off and is editor-session
 state, not a saved/automatable parameter. When enabled, cursor movement anywhere
 inside the editor (including over child controls) triggers the selected group
@@ -224,10 +258,12 @@ editor close, processor destruction or a new recording. The fixed cache holds
 32768 notes and at most 65536 quarter-note beats. A capped take keeps its captured prefix and exports
 with `partial` in the filename. See the [cache audit](realtime-audio-audit-shake-cache.md).
 
-Sample-specific controls are hidden from the main editor until the centred
-`EDIT SAMPLES` button above the sample-group sticks is clicked. The modal uses
+The cell's ED button selects its sample group and opens the sample-effects
+modal. For a cell containing multiple pitch slots, ED uses the most recently
+observed starting slot, falling back to the first slot before any playback.
+Pitch slots retain their independent settings. The modal uses
 an opaque `#D9D9D9` background, spans the editor width inside the existing
-12-pixel padding, is anchored to the bottom of that padded area, and occupies
+18-pixel padding, is anchored to the bottom of that padded area, and occupies
 70% of the editor height. Two tabs, `EFFECTS` and `SAMPLE`, sit on one row
 centred at the top. `EFFECTS` is initially selected and contains Pitch, Formant, Mono,
 Punch, the sample equaliser, and Apply to All. `SAMPLE` contains Gain, Panorama,
@@ -314,10 +350,6 @@ with those boundaries. Fades clamp to the selected region's length, and may
 overlap. The same parameter gestures drive the line handles and numeric fields.
 Release now also fades the end of one-shot samples; key-held samples retain
 their note-off fade.
-
-`EDIT SAMPLES` is hidden while the modal is open. The sample-group sticks use
-the same 12-pixel left, right and bottom padding as the modal, so their lower
-edge aligns with the bottom of the open modal.
 
 The modal does not dim the rest of the editor. Global effect controls are hidden
 while it is open. A click on empty editor background outside the modal closes
@@ -515,8 +547,8 @@ moves three pixels, the larger horizontal or vertical displacement chooses
 the axis for that drag; the axis then stays fixed until release. Numeric values
 use their linked slider's value curve and 150-pixel full-range sensitivity.
 A numeric drag sends one host change gesture, while a click still opens text
-entry. This applies to sample effects, sample timing, loop BPM, and noise
-Release. Selection changes or hiding a field end an active numeric drag.
+entry. This applies to sample effects, sample timing, and loop BPM.
+Selection changes or hiding a field end an active numeric drag.
 
 ## Formant
 
@@ -532,29 +564,36 @@ natural varispeed formants remain.
 See [playback](playback-warp-and-transients.md#formant) for tracking/latency limits
 and [state](parameters-and-state.md) for the inert former LPC host slot.
 
-## Sample Group Selector
+## Sample Grid and Activity
 
-The bottom `SampleGroupSelector` runs only on the message thread. Each item is
-one stable `(noteIndex, pitchIndex)` group from the loader's keyboard map.
+`SampleGroupSelector` is a message-thread 3-column, 3-row grid, centred horizontally
+and aligned to the bottom of the editor's 18-pixel padded area. It occupies 40%
+of that area's width and 70% of its height, including the page selector below.
+Its width is capped to preserve a 30-pixel section gap before the noise panel
+while keeping the grid horizontally centred (454 pixels wide at the default
+editor size).
+Cells have 12-pixel horizontal and vertical gaps, a `#D9D9D9` background and a
+one-pixel border. The sample's original number is centred at the bottom. All MIDI
+note names for a numbered sample (all pitch slots and both directional notes)
+appear together at the top left. Velocity layers and variations do not add cells.
+Cells are ordered by the immutable inventory, nine numbered sounds per page;
+the last page leaves unused space empty.
 
-- Buttons keep fixed size; extra width goes into gaps, with a minimum of `15 px`.
-  Scroll horizontally when groups cannot fit.
-- Resting buttons clip at the bottom edge, `6 px` below their original
-  half-visible position. A held MIDI note lifts its button by up to `10 px`,
-  scaled by note-on velocity; note-off returns it.
-- The selected dot stays anchored to the resting position, raised an extra
-  `10 px`, independent of button activity.
+Cell text and border use `#8E8B8B`, `#CA7A7A` during playback and black on hover
+(hover takes priority). Hover hides the notes and shows three 30-pixel circle
+buttons across the top: LP, ED and RP. Their background is `#A5A4A4`, with black
+text and outline. LP opens the dedicated shake area for directional sounds;
+ED opens editing; RP has no action yet. These are real JUCE button children,
+with hover maintained while moving between the cell and its buttons.
 
-## Activity Handoff
+Pages are selected with 32-pixel horizontal lines and 15-pixel gaps, centred
+below the grid. Lines use `#B2B2B2` normally, `#696868` when selected and
+`#CA7A7A` while any sound on that page plays (playback takes priority).
+A 30 Hz message-thread poll reads the existing packed atomic voice playhead
+snapshots for every pitch group. Any playing pitch/direction highlights its
+cell and page, including hidden pages. This follows voice playback rather than
+held MIDI keys and clears at voice end or bypass. No audio-thread UI callbacks,
+new shared containers, or new host parameters are introduced. The grid hides
+while the sample editor or shake area is open and preserves its current page.
 
-Audio writes note velocities/generation counters to `MidiNoteActivityState`.
-The editor builds `midiNote -> sampleGroupIndex` once from loaded groups, polls
-128 fixed note generations, and updates only buttons whose related note changed.
-Each mapped note-on remembers the last played sample's MIDI note in a scalar
-atomic, including while the editor is closed. Unmapped notes and note-offs do
-not replace it. MIDI activity never changes the editing selection.
-Clicking `EDIT SAMPLES` reads that note directly and selects its sample before
-opening the modal, without polling delay or selection throttling/debounce.
-Until a mapped sample has played, opening the modal keeps the current selection.
-Manual selection remains immediate and stays selected during subsequent MIDI
-playback; reopening the modal selects the latest played sample again.
+See the [grid handoff audit](realtime-audio-audit-sample-grid.md).

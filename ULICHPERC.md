@@ -46,8 +46,8 @@ when behavior changes.
 - `Source/UI/ShakeGesture.h`: message-thread cursor speed and reversal detection.
 - `Source/UI/AbletonMidiBridgeClient.*`: separate legacy message-thread ADD MIDI
   request client; SHAKE does not use a DAW-specific transport companion.
-- `Source/UI/SampleGroupSelector.cpp`: bottom UI selector for choosing the
-  currently edited sample group.
+- `Source/UI/SampleGroupSelector.cpp`: paged 3 x 3 sample grid, combined
+  pitch/direction note labels, playback activity, and LP/ED/RP hover actions.
 - `Source/SampleLibrary/PercussionSampleLibrary.cpp`: embedded BinaryData
   sample loading, sample-group inventory, and registration with the percussion
   synthesiser.

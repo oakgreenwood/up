@@ -8,7 +8,8 @@
 
 namespace
 {
-constexpr int editorPadding = 12;
+constexpr int editorPadding = 18;
+constexpr int sectionGap = 30;
 constexpr int uploadNoiseItemId = -1; // UI action, outside the positive source IDs.
 
 bool supportsAbletonMidiInsertion()
@@ -630,7 +631,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
       noiseWaveform(p)
 {
     juce::ignoreUnused (processorRef);
-    setSize (900, 600);
+    setSize (1320, 670);
     setWantsKeyboardFocus(true);
 
     customLNF = std::make_unique<CustomLookAndFeel>();
@@ -764,34 +765,19 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     noiseModulationSlider.setTooltip("Left: pump. Centre: unchanged. Right: lower background noise; trigger boost reaches maximum early.");
     bindSliderToParameter(noiseModulationSlider, PluginParameters::noiseModulationId, noiseModulationAttachment);
 
-    const auto configureNoiseKnob = [this] (ImageKnobSlider& slider, juce::Label& label,
-        NumericValueInput& valueInput, const char* componentId, const char* parameterId,
-        const char* name, const char* unit, float defaultValue,
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment)
-    {
-        addAndMakeVisible(slider);
-        slider.setName(juce::String("Noise ") + name);
-        slider.setComponentID(componentId);
-        slider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
-        slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-        slider.setLookAndFeel(customLNF.get());
-        slider.setDoubleClickReturnValue(true, defaultValue);
-        slider.setMouseDragSensitivity(150);
-        bindSliderToParameter(slider, parameterId, attachment);
-        configureSignedDecimalValueInput(slider, unit);
-        if (juce::String(unit) == " ms")
-            slider.textFromValueFunction = [] (double value) { return juce::String(value, 0) + " ms"; };
-        slider.updateText();
-        valueInput.discardEdit();
-        addAndMakeVisible(valueInput);
-        addAndMakeVisible(label);
-        configureKnobLabel(label, name);
-        label.setColour(juce::Label::textColourId, PluginUI::noiseCaptionColour);
-        label.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
-    };
-    configureNoiseKnob(noiseReleaseSlider, noiseReleaseLabel, noiseReleaseValueInput,
-        PluginUI::noiseReleaseSliderId, PluginParameters::noiseReleaseMsId, "RELEASE", " ms",
-        PluginParameters::noiseReleaseMsDefault, noiseReleaseAttachment);
+    addAndMakeVisible(noiseReleaseSlider);
+    noiseReleaseSlider.setName("Noise release");
+    noiseReleaseSlider.setComponentID(PluginUI::noiseReleaseSliderId);
+    noiseReleaseSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    noiseReleaseSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    noiseReleaseSlider.setLookAndFeel(customLNF.get());
+    noiseReleaseSlider.setDoubleClickReturnValue(true, PluginParameters::noiseReleaseMsDefault);
+    noiseReleaseSlider.setPopupDisplayEnabled(true, true, this);
+    bindSliderToParameter(noiseReleaseSlider, PluginParameters::noiseReleaseMsId, noiseReleaseAttachment);
+    noiseReleaseSlider.textFromValueFunction = [] (double value) { return juce::String(value, 0) + " ms"; };
+    noiseReleaseSlider.updateText();
+    addAndMakeVisible(noiseReleaseLabel);
+    configureNoiseCaption(noiseReleaseLabel, "RELEASE");
 
     sampleEffectsModalSurface = std::make_unique<SampleEffectsModalSurface>();
     addAndMakeVisible(*sampleEffectsModalSurface);
@@ -813,6 +799,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     trackMidiButton.onClick = [this]
     {
         processorRef.setVirtualMidiInput(trackMidiButton.getToggleState() ? 1 : 0);
+        shakeButton.setToggleState(true, juce::dontSendNotification);
         updateShakeMode();
     };
     configureSampleTab(midiDragButton);
@@ -1115,29 +1102,40 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
         grabKeyboardFocus();
     };
 
-    sampleGroupSelector.setSampleGroups(processorRef.getSampleGroups());
-    rebuildSampleGroupActivityMap();
-    sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
-    sampleGroupSelector.onSelectedIndexChanged = [this] (int selectedIndex)
+    sampleGrid.setSampleGroups(processorRef.getSampleGroups());
+    sampleGrid.onEdit = [this] (int group)
     {
-        selectSampleGroupForEditing(selectedIndex);
-    };
-    addAndMakeVisible(sampleGroupSelector);
-
-    addAndMakeVisible(editSamplesButton);
-    editSamplesButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffeeeeee));
-    editSamplesButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
-    editSamplesButton.onClick = [this]
-    {
-        const int midiNote = processorRef.getLatestMidiNoteOnNote();
-        if (midiNote >= 0 && midiNote < AudioPluginAudioProcessor::midiNoteActivityCount)
-        {
-            const int groupIndex = sampleGroupIndexByMidiNote[(size_t) midiNote];
-            if (groupIndex >= 0)
-                selectSampleGroupForEditing(groupIndex);
-        }
+        setShakeAreaVisible(false);
+        shakeButton.setToggleState(false, juce::dontSendNotification);
+        selectSampleGroupForEditing(group);
         setSampleEffectsModalVisible(true);
     };
+    sampleGrid.onShake = [this] (int group)
+    {
+        selectSampleGroupForEditing(group);
+        setShakeAreaVisible(true);
+    };
+    addAndMakeVisible(sampleGrid);
+
+    shakeAreaSurface = std::make_unique<SampleEffectsModalSurface>();
+    shakeAreaSurface->setName("Shake playing area");
+    addChildComponent(*shakeAreaSurface);
+    shakeAreaInstruction.setText("MOVE CURSOR TO SHAKE", juce::dontSendNotification);
+    shakeAreaInstruction.setFont(juce::Font(juce::FontOptions(30.0f, juce::Font::bold)));
+    shakeAreaInstruction.setJustificationType(juce::Justification::centred);
+    shakeAreaInstruction.setInterceptsMouseClicks(false, false);
+    addChildComponent(shakeAreaInstruction);
+    shakeAreaStartButton.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    shakeAreaStartButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    shakeAreaStartButton.setInterceptsMouseClicks(false, false);
+    shakeAreaStartButton.setWantsKeyboardFocus(false);
+    addChildComponent(shakeAreaStartButton);
+    auto closeShake = std::make_unique<SampleEffectsCloseButton>();
+    closeShake->setName("Close shake area");
+    closeShake->setTooltip("Close shake area");
+    closeShake->onClick = [this] { setShakeAreaVisible(false); };
+    shakeAreaCloseButton = std::move(closeShake);
+    addChildComponent(*shakeAreaCloseButton);
 
     sampleEffectsCloseButton = std::make_unique<SampleEffectsCloseButton>();
     addAndMakeVisible(*sampleEffectsCloseButton);
@@ -1197,6 +1195,9 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     sampleWaveformEditor.endDrag();
     equaliserEditor.onSelected = {};
     stopTimer();
+    sampleGrid.onEdit = {};
+    sampleGrid.onShake = {};
+    shakeAreaStartButton.onClick = {};
     for (const auto& binding : sampleSpecificSliderBindings)
     {
         binding.slider->removeMouseListener(this);
@@ -1205,9 +1206,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     }
     for (const auto& binding : sampleSpecificEditBindings)
         binding.parameter->removeListener(this);
-    sampleGroupSelector.onSelectedIndexChanged = {};
     applyToAllEffectSelector.onChange = {};
-    editSamplesButton.onClick = {};
     effectsTabButton.onClick = {};
     sampleTabButton.onClick = {};
     if (sampleEffectsCloseButton != nullptr)
@@ -1425,10 +1424,48 @@ void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
         : "Select or edit a sample-specific effect to apply it to all samples.");
 }
 
+void AudioPluginAudioProcessorEditor::updateMainPanelVisibility()
+{
+    const bool visible = !sampleEffectsModalOpen && !shakeAreaOpen;
+    sampleGrid.setVisible(visible);
+    juce::Component* const noiseComponents[] = {
+        &noiseSourceSelector, &noiseGainSlider, &noiseLabel, &noiseSourceLabel,
+        &noiseTriggerLabel, &noiseFollowLabel, &noiseWaveform, &noiseTriggerSelector,
+        &noiseModulationSlider, &noiseModulationLabel, &noiseReleaseSlider, &noiseReleaseLabel
+    };
+    for (auto* component : noiseComponents)
+        component->setVisible(visible);
+    if (noisePanelSurface != nullptr)
+        noisePanelSurface->setVisible(visible);
+}
+
+void AudioPluginAudioProcessorEditor::setShakeAreaVisible(bool visible)
+{
+    if (visible && sampleEffectsModalOpen)
+        setSampleEffectsModalVisible(false);
+    shakeAreaOpen = visible;
+    shakeButton.setToggleState(false, juce::dontSendNotification);
+    shakeGesture.reset();
+    if (shakeAreaSurface != nullptr)
+        shakeAreaSurface->setVisible(visible);
+    if (shakeAreaCloseButton != nullptr)
+        shakeAreaCloseButton->setVisible(visible);
+    shakeAreaInstruction.setVisible(visible);
+    if (visible)
+        trackMidiButton.toFront(false);
+    updateMainPanelVisibility();
+    resized();
+    updateShakeMode();
+    repaint();
+}
+
 void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBeVisible)
 {
+    if (shouldBeVisible && shakeAreaOpen)
+        setShakeAreaVisible(false);
     sampleEffectsModalOpen = shouldBeVisible;
-    editSamplesButton.setVisible(!shouldBeVisible);
+    if (!shouldBeVisible)
+        shakeButton.setToggleState(false, juce::dontSendNotification);
 
     if (sampleEffectsModalSurface != nullptr)
         sampleEffectsModalSurface->setVisible(shouldBeVisible);
@@ -1436,21 +1473,13 @@ void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBe
         sampleEffectsCloseButton->setVisible(shouldBeVisible);
 
     updateSampleEditorTabVisibility();
-
-    juce::Component* const globalEffectComponents[] = {
-        &rzhavSlider, &rzhavLabel,
-        &sustainSlider, &sustainLabel,
-        &ottSlider, &ottLabel,
-        &noiseSourceSelector, &noiseGainSlider, &noiseLabel,
-        &noiseSourceLabel, &noiseTriggerLabel, &noiseFollowLabel, &noiseWaveform,
-        &noiseTriggerSelector, &noiseModulationSlider, &noiseModulationLabel,
-        &noiseReleaseSlider, &noiseReleaseLabel, &noiseReleaseValueInput
+    juce::Component* const globalComponents[] = {
+        &rzhavSlider, &rzhavLabel, &sustainSlider, &sustainLabel, &ottSlider, &ottLabel
     };
-    for (auto* component : globalEffectComponents)
+    for (auto* component : globalComponents)
         component->setVisible(!shouldBeVisible);
-    if (noisePanelSurface != nullptr)
-        noisePanelSurface->setVisible(!shouldBeVisible);
-
+    updateMainPanelVisibility();
+    resized();
     repaint();
 }
 
@@ -1582,8 +1611,7 @@ void AudioPluginAudioProcessorEditor::visibilityChanged()
 {
     if (!isShowing())
     {
-        shakeButton.setToggleState(false, juce::dontSendNotification);
-        updateShakeMode();
+        setShakeAreaVisible(false);
         sampleWaveformEditor.endDrag();
         noiseFileDragActive = false;
         repaint();
@@ -1592,7 +1620,7 @@ void AudioPluginAudioProcessorEditor::visibilityChanged()
 
 void AudioPluginAudioProcessorEditor::paintOverChildren(juce::Graphics& g)
 {
-    if (!noiseFileDragActive || noisePanelSurface == nullptr)
+    if (!noiseFileDragActive || noisePanelSurface == nullptr || shakeAreaOpen)
         return;
 
     // Paint above every child without introducing another drag target.
@@ -1651,36 +1679,17 @@ float AudioPluginAudioProcessorEditor::getParameterDefaultValue(const juce::Stri
     return 0.0f;
 }
 
-void AudioPluginAudioProcessorEditor::rebuildSampleGroupActivityMap()
-{
-    sampleGroupIndexByMidiNote.fill(-1);
-    observedMidiNoteActivityGenerations.fill(0);
-
-    const auto& sampleGroups = processorRef.getSampleGroups();
-    for (int groupIndex = 0; groupIndex < static_cast<int>(sampleGroups.size()); ++groupIndex)
-    {
-        const int midiNote = sampleGroups[(size_t) groupIndex].midiNote;
-        if (midiNote >= 0 && midiNote < AudioPluginAudioProcessor::midiNoteActivityCount)
-            sampleGroupIndexByMidiNote[(size_t) midiNote] = groupIndex;
-        const int downNote = sampleGroups[(size_t) groupIndex].downMidiNote;
-        if (downNote >= 0 && downNote < AudioPluginAudioProcessor::midiNoteActivityCount)
-            sampleGroupIndexByMidiNote[(size_t) downNote] = groupIndex;
-    }
-}
-
 void AudioPluginAudioProcessorEditor::selectSampleGroupForEditing(int groupIndex)
 {
     const juce::ScopedValueSetter<bool> guard(ignoreSampleSpecificEdits, true);
     if (groupIndex != processorRef.getSelectedSampleGroupIndex())
     {
         equaliserEditor.endDrag();
+        sampleWaveformEditor.endDrag();
         processorRef.setSelectedSampleGroupIndex(groupIndex);
     }
-
-    sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
     if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
         refreshSampleSpecificControls();
-    updateShakeMode();
 }
 
 void AudioPluginAudioProcessorEditor::resetShakeMidiInputCheck() noexcept
@@ -1733,14 +1742,21 @@ void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
     const int group = processorRef.getSelectedSampleGroupIndex();
     const int input = processorRef.getVirtualMidiInput();
     const bool trackMidi = input > 0;
-    const bool eligible = sampleEffectsModalOpen
+    const bool eligible = (sampleEffectsModalOpen || shakeAreaOpen)
         && processorRef.isSampleGroupDirectional(group);
-    shakeButton.setVisible(eligible);
+    shakeButton.setVisible(eligible && sampleEffectsModalOpen);
     trackMidiButton.setVisible(eligible);
+    trackMidiButton.setButtonText(shakeAreaOpen
+        ? (trackMidi ? "TRACK MIDI: ON" : "TRACK MIDI: OFF") : "TRACK MIDI");
     trackMidiButton.setToggleState(trackMidi, juce::dontSendNotification);
     if (!eligible)
         shakeButton.setToggleState(false, juce::dontSendNotification);
     const bool wantsShake = eligible && isShowing() && shakeButton.getToggleState();
+    sampleGrid.setShakeGroup(wantsShake ? group : -1);
+    shakeAreaInstruction.setColour(juce::Label::textColourId,
+        wantsShake ? juce::Colours::black : juce::Colour(0xff716c6c));
+    shakeAreaStartButton.setVisible(shakeAreaOpen);
+    shakeAreaStartButton.setButtonText(wantsShake ? "CLICK TO STOP" : "CLICK TO START");
     const bool listening = wantsShake && !processorRef.isPlaybackBypassed();
     if (listening != shakeListening || group != shakeTargetGroup || input != shakeVirtualInput)
     {
@@ -1791,8 +1807,13 @@ void AudioPluginAudioProcessorEditor::handleShakeMouseMove(const juce::MouseEven
         || processorRef.isPlaybackBypassed())
         return;
     const auto position = event.getEventRelativeTo(this).position;
-    if (!getLocalBounds().toFloat().contains(position))
+    if (!getLocalBounds().toFloat().contains(position)
+        || (shakeAreaOpen && (!shakeAreaSurface->getBounds().toFloat().contains(position)
+            || event.eventComponent == &trackMidiButton)))
+    {
+        shakeGesture.rebase();
         return;
+    }
     const auto generation = processorRef.getShakeResetGeneration();
     if (generation != observedShakeResetGeneration)
     {
@@ -1863,6 +1884,9 @@ void AudioPluginAudioProcessorEditor::timerCallback()
         midiInsertFeedbackUntilMs = 0.0;
         midiInsertButton.setButtonText("ADD MIDI");
     }
+    const auto& groups = processorRef.getSampleGroups();
+    for (int group = 0; group < static_cast<int>(groups.size()); ++group)
+        sampleGrid.setGroupPlaying(group, processorRef.getSamplePlayheadProgress(group) >= 0.0f);
     updateShakeMode(true);
     updateSampleTrimInputs();
     if (!sampleLoopBpmValueInput.editing()
@@ -1899,34 +1923,15 @@ void AudioPluginAudioProcessorEditor::timerCallback()
 
     if (displayedSampleGroupIndex != processorRef.getSelectedSampleGroupIndex())
     {
-        sampleGroupSelector.setSelectedIndex(processorRef.getSelectedSampleGroupIndex());
         refreshSampleSpecificControls();
     }
-    for (int midiNote = 0; midiNote < AudioPluginAudioProcessor::midiNoteActivityCount; ++midiNote)
-    {
-        const auto noteIndex = (size_t) midiNote;
-        const uint32_t generation = processorRef.getMidiNoteActivityGeneration(midiNote);
-        if (observedMidiNoteActivityGenerations[noteIndex] == generation)
-            continue;
 
-        observedMidiNoteActivityGenerations[noteIndex] = generation;
-
-        const int groupIndex = sampleGroupIndexByMidiNote[noteIndex];
-        if (groupIndex >= 0)
-        {
-            const auto& group = processorRef.getSampleGroups()[static_cast<size_t>(groupIndex)];
-            sampleGroupSelector.setActivityVelocity(
-                groupIndex,
-                juce::jmax(processorRef.getMidiNoteActivityVelocity(group.midiNote),
-                    processorRef.getMidiNoteActivityVelocity(group.downMidiNote)));
-        }
-    }
 }
 
 //==============================================================================
 void AudioPluginAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll(juce::Colours::white);
+    g.fillAll(juce::Colour(0xffcdd0c3));
 }
 
 void AudioPluginAudioProcessorEditor::resized()
@@ -1968,28 +1973,42 @@ void AudioPluginAudioProcessorEditor::resized()
                         label.getBottom() + valueLabelGap, valueInputWidth, valueInputHeight);
     };
 
-    placeKnobWithLabel(rzhavSlider, rzhavLabel, 0, 222);
-    placeKnobWithLabel(sustainSlider, sustainLabel, 81, 222);
-    placeKnobWithLabel(ottSlider, ottLabel, 162, 222);
-    const int noisePanelWidth = juce::roundToInt((getWidth() - 290 - editorPadding) / 1.5);
-    const juce::Rectangle<int> noiseBounds(290, editorPadding, noisePanelWidth, 500);
+    placeKnobWithLabel(rzhavSlider, rzhavLabel, editorPadding, 222);
+    placeKnobWithLabel(sustainSlider, sustainLabel, editorPadding + 81, 222);
+    placeKnobWithLabel(ottSlider, ottLabel, editorPadding + 162, 222);
+    const auto contentBounds = getLocalBounds().reduced(editorPadding);
+    const int noisePanelWidth = juce::roundToInt(contentBounds.getWidth() * 0.3f);
+    const int noisePanelHeight = juce::roundToInt(contentBounds.getHeight() * 0.6f);
+    const juce::Rectangle<int> noiseBounds(contentBounds.getRight() - noisePanelWidth,
+                                          contentBounds.getBottom() - noisePanelHeight,
+                                          noisePanelWidth, noisePanelHeight);
     if (noisePanelSurface != nullptr)
         noisePanelSurface->setBounds(noiseBounds);
-    const int noiseLeft = noiseBounds.getX() + 24;
-    const int noiseWidth = noiseBounds.getWidth() - 48;
+    const int noiseLeft = noiseBounds.getX() + editorPadding;
+    const int noiseWidth = noiseBounds.getWidth() - editorPadding * 2;
     const int noiseTop = noiseBounds.getY();
-    noiseSourceLabel.setBounds(noiseLeft, noiseTop + 62, noiseWidth, 20);
-    noiseSourceSelector.setBounds(noiseLeft, noiseTop + 83, noiseWidth, 30);
-    noiseWaveform.setBounds(noiseLeft - 6, noiseTop + 125, noiseWidth + 12, 78);
-    noiseTriggerLabel.setBounds(noiseLeft, noiseTop + 218, noiseWidth, 20);
-    noiseTriggerSelector.setBounds(noiseLeft, noiseTop + 239, noiseWidth, 30);
-    noiseLabel.setBounds(noiseLeft, noiseTop + 280, noiseWidth, 20);
-    noiseGainSlider.setBounds(noiseLeft - 8, noiseTop + 302, noiseWidth + 16, 26);
-    noiseModulationLabel.setBounds(noiseLeft, noiseTop + 335, noiseWidth / 2, 20);
-    noiseFollowLabel.setBounds(noiseLeft + noiseWidth / 2, noiseTop + 335, noiseWidth / 2, 20);
-    noiseModulationSlider.setBounds(noiseLeft - 8, noiseTop + 358, noiseWidth + 16, 26);
-    placeKnobWithValueAndLabel(noiseReleaseSlider, noiseReleaseLabel, noiseReleaseValueInput,
-                               noiseLeft + noiseWidth / 2 - labelWidth / 2, noiseTop + 412);
+    noiseSourceLabel.setBounds(noiseLeft, noiseTop + 52, noiseWidth, 20);
+    noiseSourceSelector.setBounds(noiseLeft, noiseTop + 72, noiseWidth, 24);
+    noiseWaveform.setBounds(noiseLeft - 6, noiseTop + 98, noiseWidth + 12, 40);
+    noiseTriggerLabel.setBounds(noiseLeft, noiseTop + 140, noiseWidth, 20);
+    noiseTriggerSelector.setBounds(noiseLeft, noiseTop + 160, noiseWidth, 24);
+    constexpr int noiseSliderGap = 18;
+    const int noiseHalfWidth = (noiseWidth - noiseSliderGap) / 2;
+    const int releaseLeft = noiseLeft + noiseHalfWidth + noiseSliderGap;
+    noiseLabel.setBounds(noiseLeft, noiseTop + 186, noiseHalfWidth, 20);
+    noiseGainSlider.setBounds(noiseLeft - 8, noiseTop + 206, noiseHalfWidth + 16, 24);
+    noiseReleaseLabel.setBounds(releaseLeft, noiseTop + 186, noiseHalfWidth, 20);
+    noiseReleaseSlider.setBounds(releaseLeft - 8, noiseTop + 206, noiseHalfWidth + 16, 24);
+    noiseModulationLabel.setBounds(noiseLeft, noiseTop + 232, noiseWidth / 2, 20);
+    noiseFollowLabel.setBounds(noiseLeft + noiseWidth / 2, noiseTop + 232, noiseWidth / 2, 20);
+    noiseModulationSlider.setBounds(noiseLeft - 8, noiseTop + 252, noiseWidth + 16, 24);
+
+    const int gridWidth = juce::jmax(0, juce::jmin(
+        juce::roundToInt(contentBounds.getWidth() * 0.4f),
+        2 * (noiseBounds.getX() - sectionGap - contentBounds.getCentreX())));
+    const int gridHeight = juce::roundToInt(contentBounds.getHeight() * 0.7f);
+    sampleGrid.setBounds(contentBounds.getCentreX() - gridWidth / 2,
+                         contentBounds.getBottom() - gridHeight, gridWidth, gridHeight);
 
     const int modalHeight = getHeight() * 7 / 10;
     const auto modalBounds = juce::Rectangle<int>(
@@ -2009,6 +2028,18 @@ void AudioPluginAudioProcessorEditor::resized()
                               modalBounds.getY() + 14, tabWidth, tabHeight);
     shakeButton.setBounds(modalBounds.getRight() - 100, modalBounds.getY() + 14, 86, tabHeight);
     trackMidiButton.setBounds(shakeButton.getX(), shakeButton.getBottom() + 6, 86, 26);
+    if (shakeAreaSurface != nullptr)
+    {
+        const auto area = sampleGrid.getBounds().getUnion(noiseBounds);
+        shakeAreaSurface->setBounds(area);
+        const int textTop = area.getCentreY() - 42;
+        shakeAreaInstruction.setBounds(area.getX() + 18, textTop, area.getWidth() - 36, 42);
+        shakeAreaStartButton.setBounds(area.getCentreX() - 100, textTop + 48, 200, 32);
+        if (shakeAreaCloseButton != nullptr)
+            shakeAreaCloseButton->setBounds(area.getRight() - 26, area.getY() - 32, 26, 26);
+        if (shakeAreaOpen)
+            trackMidiButton.setBounds(area.getCentreX() - 90, area.getBottom() - 48, 180, 30);
+    }
     midiDragButton.setBounds(modalBounds.getRight() - 222, modalBounds.getY() + 14, 110, tabHeight);
     midiInsertButton.setBounds(modalBounds.getX() + 14, modalBounds.getY() + 14, 110, tabHeight);
 
@@ -2091,18 +2122,5 @@ void AudioPluginAudioProcessorEditor::resized()
             closeButtonSize,
             closeButtonSize);
 
-    const int selectorHeight = SampleGroupSelector::getPreferredHeight();
-    sampleGroupSelector.setBounds(editorPadding,
-                                  getHeight() - editorPadding - selectorHeight,
-                                  juce::jmax(0, getWidth() - editorPadding * 2),
-                                  selectorHeight);
 
-    constexpr int editSamplesButtonWidth = 150;
-    constexpr int editSamplesButtonHeight = 26;
-    constexpr int editSamplesButtonGap = 8;
-    editSamplesButton.setBounds(
-        (getWidth() - editSamplesButtonWidth) / 2,
-        sampleGroupSelector.getY() - editSamplesButtonHeight - editSamplesButtonGap,
-        editSamplesButtonWidth,
-        editSamplesButtonHeight);
 }
