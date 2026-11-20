@@ -16,7 +16,7 @@ public:
     void setGroupPlaying(int groupIndex, bool playing);
     void setShakeGroup(int groupIndex);
     std::function<void(int)> onEdit;
-    std::function<void(int)> onShake;
+    std::function<void(int)> onLivePlay;
     void resized() override;
 
 private:

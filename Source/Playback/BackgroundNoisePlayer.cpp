@@ -589,6 +589,12 @@ void BackgroundNoisePlayer::process(juce::AudioBuffer<float>& output,
     // Complete a smooth stop even if mouse-up arrives before the fade ends.
     // Once reset, the first unpaused render restarts at the final trimmed start.
     const bool trimPaused = (gestureState & 1u) != 0 || trimStopPending;
+    const bool gainEnabled = std::isfinite(gainDb) && gainDb > PluginParameters::noiseGainDbSilence;
+    if (activeSource < 0 && (trimPaused || !gainEnabled))
+    {
+        trimStopPending = false;
+        return;
+    }
     const int requestedSource = std::isfinite(sourceIndex)
         ? static_cast<int>(std::round(juce::jlimit(0.0f, static_cast<float>(importedSourceIndex() + maximumCustomSources - 1), sourceIndex))) : 0;
     const bool imported = requestedSource >= importedSourceIndex();
@@ -608,7 +614,7 @@ void BackgroundNoisePlayer::process(juce::AudioBuffer<float>& output,
     if (imported && requestedSlot < 0 && publishedImported.load() >= 0)
         requestedData = activeSource == requestedSource ? activeData : nullptr;
     const bool sameSource = requestedSource == activeSource && requestedData == activeData;
-    const float targetGain = !trimPaused && requestedData != nullptr && std::isfinite(gainDb) && gainDb > PluginParameters::noiseGainDbSilence
+    const float targetGain = !trimPaused && requestedData != nullptr && gainEnabled
         ? juce::Decibels::decibelsToGain(juce::jlimit(PluginParameters::noiseGainDbMinimum,
                                                    PluginParameters::noiseGainDbMaximum, gainDb)) : 0.0f;
     const auto requestedRegion = resolveRegion(requestedData != nullptr ? requestedData->audio.getNumSamples() : 0,
@@ -702,7 +708,8 @@ void BackgroundNoisePlayer::process(juce::AudioBuffer<float>& output,
         }
         const float l = loopedSample(0);
         const float r = source.audio.getNumChannels() > 1 ? loopedSample(1) : l;
-        const float modulatedGain = amplitude * regionFade.getNextValue() * modulation[frame];
+        const float modulationGain = modulation != nullptr ? modulation[frame] : 1.0f;
+        const float modulatedGain = amplitude * regionFade.getNextValue() * modulationGain;
         left[frame] += (right != nullptr ? l : 0.5f * l + 0.5f * r) * modulatedGain;
         if (right != nullptr)
             right[frame] += r * modulatedGain;

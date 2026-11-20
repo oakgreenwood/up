@@ -2,6 +2,12 @@
 #include "PluginEditor.h"
 #include "Parameters/PluginParameters.h"
 #include "UI/CustomLookAndFeel.h"
+#if JUCE_MAC
+#include "UI/TrackpadPlayView.h"
+#if JUCE_DEBUG
+#include <os/log.h>
+#endif
+#endif
 
 #include <cmath>
 
@@ -11,6 +17,21 @@ namespace
 constexpr int editorPadding = 18;
 constexpr int sectionGap = 30;
 constexpr int uploadNoiseItemId = -1; // UI action, outside the positive source IDs.
+constexpr float touchpadCentreProportion = 0.45f;
+constexpr float touchpadCentreInset = (1.0f - touchpadCentreProportion) * 0.5f;
+constexpr double touchpadHitIntervalMs = 30.0;
+
+#if JUCE_DEBUG
+void logInputControl(const juce::String& line)
+{
+#if JUCE_MAC
+    static const auto log = os_log_create("audio.ulichperc", "input-control");
+    os_log(log, "%{public}s", line.toRawUTF8());
+#else
+    DBG("INPUT CONTROL " + line);
+#endif
+}
+#endif
 
 bool supportsAbletonMidiInsertion()
 {
@@ -795,12 +816,22 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     configureSampleTab(shakeButton);
     configureSampleTab(trackMidiButton);
     trackMidiButton.setClickingTogglesState(true);
-    trackMidiButton.setTooltip("On: send SHAKE through ULICHPERC MIDI and listen to the DAW input. Off: play SHAKE internally.");
+    trackMidiButton.setTooltip("On: send live hits through ULICHPERC MIDI and listen to the DAW input. Off: play live hits internally.");
     trackMidiButton.onClick = [this]
     {
         processorRef.setVirtualMidiInput(trackMidiButton.getToggleState() ? 1 : 0);
-        shakeButton.setToggleState(true, juce::dontSendNotification);
+        if (!isNonDirectionalLivePlayOpen())
+            shakeButton.setToggleState(true, juce::dontSendNotification);
         updateShakeMode();
+    };
+    configureSampleTab(inputControlButton);
+    inputControlButton.setClickingTogglesState(true);
+    inputControlButton.setTooltip("Switch between touchpad and microphone triggers. "
+                                  "Route the microphone to the plug-in sidechain or select it as the standalone audio input.");
+    inputControlButton.onClick = [this]
+    {
+        updateShakeMode();
+        repaint();
     };
     configureSampleTab(midiDragButton);
     configureSampleTab(midiInsertButton);
@@ -1105,37 +1136,43 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     sampleGrid.setSampleGroups(processorRef.getSampleGroups());
     sampleGrid.onEdit = [this] (int group)
     {
-        setShakeAreaVisible(false);
+        setLivePlayGroup(-1);
         shakeButton.setToggleState(false, juce::dontSendNotification);
         selectSampleGroupForEditing(group);
         setSampleEffectsModalVisible(true);
     };
-    sampleGrid.onShake = [this] (int group)
+    sampleGrid.onLivePlay = [this] (int group)
     {
         selectSampleGroupForEditing(group);
-        setShakeAreaVisible(true);
+        setLivePlayGroup(group);
     };
     addAndMakeVisible(sampleGrid);
 
-    shakeAreaSurface = std::make_unique<SampleEffectsModalSurface>();
-    shakeAreaSurface->setName("Shake playing area");
-    addChildComponent(*shakeAreaSurface);
-    shakeAreaInstruction.setText("MOVE CURSOR TO SHAKE", juce::dontSendNotification);
-    shakeAreaInstruction.setFont(juce::Font(juce::FontOptions(30.0f, juce::Font::bold)));
-    shakeAreaInstruction.setJustificationType(juce::Justification::centred);
-    shakeAreaInstruction.setInterceptsMouseClicks(false, false);
-    addChildComponent(shakeAreaInstruction);
+    livePlaySurface = std::make_unique<SampleEffectsModalSurface>();
+    livePlaySurface->setName("Live play area");
+    addChildComponent(*livePlaySurface);
+    livePlayInstruction.setText("MOVE CURSOR TO SHAKE", juce::dontSendNotification);
+    livePlayInstruction.setFont(juce::Font(juce::FontOptions(30.0f, juce::Font::bold)));
+    livePlayInstruction.setJustificationType(juce::Justification::centred);
+    livePlayInstruction.setInterceptsMouseClicks(false, false);
+    addChildComponent(livePlayInstruction);
+#if JUCE_MAC
+    trackpadPlayView = std::make_unique<TrackpadPlayView>(
+        [this] (int velocity, TrackpadPlayView::Touch touch, double pressedMs)
+        { handleTouchpadHit(velocity, touch, pressedMs); });
+    livePlaySurface->addChildComponent(*trackpadPlayView);
+#endif
     shakeAreaStartButton.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     shakeAreaStartButton.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
     shakeAreaStartButton.setInterceptsMouseClicks(false, false);
     shakeAreaStartButton.setWantsKeyboardFocus(false);
     addChildComponent(shakeAreaStartButton);
-    auto closeShake = std::make_unique<SampleEffectsCloseButton>();
-    closeShake->setName("Close shake area");
-    closeShake->setTooltip("Close shake area");
-    closeShake->onClick = [this] { setShakeAreaVisible(false); };
-    shakeAreaCloseButton = std::move(closeShake);
-    addChildComponent(*shakeAreaCloseButton);
+    auto closeLivePlay = std::make_unique<SampleEffectsCloseButton>();
+    closeLivePlay->setName("Close live play area");
+    closeLivePlay->setTooltip("Close live play area");
+    closeLivePlay->onClick = [this] { setLivePlayGroup(-1); };
+    livePlayCloseButton = std::move(closeLivePlay);
+    addChildComponent(*livePlayCloseButton);
 
     sampleEffectsCloseButton = std::make_unique<SampleEffectsCloseButton>();
     addAndMakeVisible(*sampleEffectsCloseButton);
@@ -1182,7 +1219,11 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
-    processorRef.setShakeSampleGroup(-1);
+    processorRef.setInputControlTarget(-1);
+#if JUCE_MAC
+    trackpadPlayView.reset();
+#endif
+    processorRef.setLivePlayNotes(-1);
     processorRef.setShakeVirtualMidiActive(false);
     removeMouseListener(&shakeMouseListener);
     shakeButton.onClick = {};
@@ -1196,8 +1237,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     equaliserEditor.onSelected = {};
     stopTimer();
     sampleGrid.onEdit = {};
-    sampleGrid.onShake = {};
-    shakeAreaStartButton.onClick = {};
+    sampleGrid.onLivePlay = {};
     for (const auto& binding : sampleSpecificSliderBindings)
     {
         binding.slider->removeMouseListener(this);
@@ -1426,7 +1466,7 @@ void AudioPluginAudioProcessorEditor::refreshApplyToAllButton()
 
 void AudioPluginAudioProcessorEditor::updateMainPanelVisibility()
 {
-    const bool visible = !sampleEffectsModalOpen && !shakeAreaOpen;
+    const bool visible = !sampleEffectsModalOpen && livePlayGroup < 0;
     sampleGrid.setVisible(visible);
     juce::Component* const noiseComponents[] = {
         &noiseSourceSelector, &noiseGainSlider, &noiseLabel, &noiseSourceLabel,
@@ -1439,20 +1479,39 @@ void AudioPluginAudioProcessorEditor::updateMainPanelVisibility()
         noisePanelSurface->setVisible(visible);
 }
 
-void AudioPluginAudioProcessorEditor::setShakeAreaVisible(bool visible)
+bool AudioPluginAudioProcessorEditor::isNonDirectionalLivePlayOpen() const noexcept
 {
+    return livePlayGroup >= 0 && !processorRef.isSampleGroupDirectional(livePlayGroup);
+}
+
+bool AudioPluginAudioProcessorEditor::isInputControlOpen() const noexcept
+{
+    return isNonDirectionalLivePlayOpen() && inputControlButton.getToggleState();
+}
+
+bool AudioPluginAudioProcessorEditor::isTouchpadPlayOpen() const noexcept
+{
+    return isNonDirectionalLivePlayOpen() && !inputControlButton.getToggleState();
+}
+
+void AudioPluginAudioProcessorEditor::setLivePlayGroup(int group)
+{
+    const bool visible = group >= 0;
     if (visible && sampleEffectsModalOpen)
         setSampleEffectsModalVisible(false);
-    shakeAreaOpen = visible;
+    livePlayGroup = group;
     shakeButton.setToggleState(false, juce::dontSendNotification);
     shakeGesture.reset();
-    if (shakeAreaSurface != nullptr)
-        shakeAreaSurface->setVisible(visible);
-    if (shakeAreaCloseButton != nullptr)
-        shakeAreaCloseButton->setVisible(visible);
-    shakeAreaInstruction.setVisible(visible);
+    if (livePlaySurface != nullptr)
+        livePlaySurface->setVisible(visible);
+    if (livePlayCloseButton != nullptr)
+        livePlayCloseButton->setVisible(visible);
+    livePlayInstruction.setVisible(visible);
     if (visible)
+    {
         trackMidiButton.toFront(false);
+        inputControlButton.toFront(false);
+    }
     updateMainPanelVisibility();
     resized();
     updateShakeMode();
@@ -1461,8 +1520,8 @@ void AudioPluginAudioProcessorEditor::setShakeAreaVisible(bool visible)
 
 void AudioPluginAudioProcessorEditor::setSampleEffectsModalVisible(bool shouldBeVisible)
 {
-    if (shouldBeVisible && shakeAreaOpen)
-        setShakeAreaVisible(false);
+    if (shouldBeVisible && livePlayGroup >= 0)
+        setLivePlayGroup(-1);
     sampleEffectsModalOpen = shouldBeVisible;
     if (!shouldBeVisible)
         shakeButton.setToggleState(false, juce::dontSendNotification);
@@ -1611,7 +1670,7 @@ void AudioPluginAudioProcessorEditor::visibilityChanged()
 {
     if (!isShowing())
     {
-        setShakeAreaVisible(false);
+        setLivePlayGroup(-1);
         sampleWaveformEditor.endDrag();
         noiseFileDragActive = false;
         repaint();
@@ -1620,7 +1679,26 @@ void AudioPluginAudioProcessorEditor::visibilityChanged()
 
 void AudioPluginAudioProcessorEditor::paintOverChildren(juce::Graphics& g)
 {
-    if (!noiseFileDragActive || noisePanelSurface == nullptr || shakeAreaOpen)
+    if (isTouchpadPlayOpen() && livePlaySurface != nullptr)
+    {
+        const auto& groups = processorRef.getSampleGroups();
+        const auto& primary = groups[static_cast<size_t>(livePlayGroup)];
+        const bool hasP2 = std::any_of(groups.begin(), groups.end(), [&] (const auto& candidate)
+        {
+            return candidate.noteIndex == primary.noteIndex && candidate.pitchIndex == 2
+                && candidate.midiNote != primary.midiNote;
+        });
+        if (hasP2)
+        {
+            const juce::Rectangle<float> centre { touchpadCentreInset, touchpadCentreInset,
+                                                  touchpadCentreProportion, touchpadCentreProportion };
+            g.setColour(juce::Colour(0xff989191));
+            g.drawRect(livePlaySurface->getBounds().toFloat().getProportion(centre), 1.0f);
+        }
+        return;
+    }
+
+    if (!noiseFileDragActive || noisePanelSurface == nullptr || livePlayGroup >= 0)
         return;
 
     // Paint above every child without introducing another drag target.
@@ -1739,34 +1817,65 @@ void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
     midiDragButton.setEnabled(take.available);
     midiInsertButton.setVisible(sampleEffectsModalOpen && abletonMidiInsertSupported);
     midiInsertButton.setEnabled(take.available && !abletonMidiBridge.isPending());
-    const int group = processorRef.getSelectedSampleGroupIndex();
+    const int group = livePlayGroup >= 0 ? livePlayGroup : processorRef.getSelectedSampleGroupIndex();
     const int input = processorRef.getVirtualMidiInput();
     const bool trackMidi = input > 0;
-    const bool eligible = (sampleEffectsModalOpen || shakeAreaOpen)
+    const bool nonDirectional = isNonDirectionalLivePlayOpen();
+    const bool inputControl = isInputControlOpen();
+    const bool touchpad = nonDirectional && !inputControl;
+    const bool shakeEligible = (sampleEffectsModalOpen || livePlayGroup >= 0)
         && processorRef.isSampleGroupDirectional(group);
-    shakeButton.setVisible(eligible && sampleEffectsModalOpen);
-    trackMidiButton.setVisible(eligible);
-    trackMidiButton.setButtonText(shakeAreaOpen
+    const auto& groups = processorRef.getSampleGroups();
+    processorRef.setInputControlTarget(inputControl && isShowing() ? groups[static_cast<size_t>(group)].midiNote : -1,
+                                       trackMidi);
+    shakeButton.setVisible(shakeEligible && sampleEffectsModalOpen);
+    trackMidiButton.setVisible(shakeEligible || nonDirectional);
+    trackMidiButton.setButtonText(livePlayGroup >= 0 && !nonDirectional
         ? (trackMidi ? "TRACK MIDI: ON" : "TRACK MIDI: OFF") : "TRACK MIDI");
     trackMidiButton.setToggleState(trackMidi, juce::dontSendNotification);
-    if (!eligible)
+    inputControlButton.setVisible(nonDirectional);
+#if JUCE_MAC
+    if (trackpadPlayView != nullptr)
+        trackpadPlayView->setVisible(touchpad);
+#endif
+    livePlayInstruction.setText(inputControl ? "PLAY INTO THE MIC"
+        : touchpad ? "HIT TOUCHPAD TO PLAY" : "MOVE CURSOR TO SHAKE", juce::dontSendNotification);
+    if (!shakeEligible)
         shakeButton.setToggleState(false, juce::dontSendNotification);
-    const bool wantsShake = eligible && isShowing() && shakeButton.getToggleState();
+    const bool wantsShake = shakeEligible && isShowing() && shakeButton.getToggleState();
     sampleGrid.setShakeGroup(wantsShake ? group : -1);
-    shakeAreaInstruction.setColour(juce::Label::textColourId,
-        wantsShake ? juce::Colours::black : juce::Colour(0xff716c6c));
-    shakeAreaStartButton.setVisible(shakeAreaOpen);
+    livePlayInstruction.setColour(juce::Label::textColourId,
+        nonDirectional || wantsShake ? juce::Colours::black : juce::Colour(0xff716c6c));
+    shakeAreaStartButton.setVisible(livePlayGroup >= 0 && !nonDirectional);
     shakeAreaStartButton.setButtonText(wantsShake ? "CLICK TO STOP" : "CLICK TO START");
-    const bool listening = wantsShake && !processorRef.isPlaybackBypassed();
-    if (listening != shakeListening || group != shakeTargetGroup || input != shakeVirtualInput)
+    const bool listening = (wantsShake || ((touchpad || (inputControl && trackMidi)) && isShowing()))
+        && !processorRef.isPlaybackBypassed();
+    if (listening != liveMidiListening || group != liveMidiGroup || input != liveMidiInput
+        || inputControl != liveMidiUsesInputControl)
     {
         virtualMidi.release();
-        shakeListening = listening;
-        shakeTargetGroup = group;
-        shakeVirtualInput = input;
+        liveMidiListening = listening;
+        liveMidiUsesInputControl = inputControl;
+        nextTouchpadHitMs = 0.0;
+        liveMidiGroup = group;
+        liveMidiInput = input;
         shakeGesture.reset();
         resetShakeMidiInputCheck();
-        processorRef.setShakeSampleGroup(listening && !trackMidi ? group : -1);
+        liveMidiNotes = { -1, -1 };
+        if (listening)
+        {
+            const auto& primary = groups[static_cast<size_t>(group)];
+            liveMidiNotes = { primary.midiNote, primary.downMidiNote };
+            if (touchpad)
+            {
+                const auto alternate = std::find_if(groups.begin(), groups.end(), [&] (const auto& candidate)
+                {
+                    return candidate.noteIndex == primary.noteIndex && candidate.pitchIndex == 2;
+                });
+                liveMidiNotes[1] = alternate != groups.end() ? alternate->midiNote : primary.midiNote;
+            }
+        }
+        processorRef.setLivePlayNotes(trackMidi ? -1 : liveMidiNotes[0], liveMidiNotes[1]);
         processorRef.setShakeVirtualMidiActive(listening && trackMidi);
         if (listening && trackMidi)
             processorRef.requestShakeSequenceReset();
@@ -1791,8 +1900,16 @@ void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
         resetShakeMidiInputCheck();
         shakeMidiInputMonitoring = monitorInput;
     }
-    if (pollMidi && monitorInput)
-        checkShakeMidiInput();
+    if (pollMidi)
+    {
+        processorRef.forEachInputControlVelocity([&] (int velocity)
+        {
+            if (inputControl && monitorInput && !processorRef.isPlaybackBypassed())
+                triggerLiveHit(velocity, false);
+        });
+        if (monitorInput)
+            checkShakeMidiInput();
+    }
     shakeButton.setTooltip(trackMidi ? VirtualMidi::portName()
         + ": enable this MIDI input in the DAW, route it to this track and enable monitoring. "
         + (virtualMidi.getError().isNotEmpty() ? virtualMidi.getError() + " " : juce::String())
@@ -1800,15 +1917,49 @@ void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
         : "Move to audition the selected sample internally. Enable TRACK MIDI to send notes through the DAW input.");
 }
 
+bool AudioPluginAudioProcessorEditor::triggerLiveHit(int velocity, bool alternate)
+{
+    const int note = liveMidiNotes[alternate ? 1 : 0];
+    if (!liveMidiListening || note < 0)
+        return false;
+    if (liveMidiInput > 0)
+    {
+        watchShakeMidiInput(note);
+        return virtualMidi.trigger(note, velocity);
+    }
+    return processorRef.triggerLivePlay(velocity, alternate);
+}
+
+void AudioPluginAudioProcessorEditor::handleTouchpadHit(int velocity, std::optional<juce::Point<float>> touch,
+                                                      double pressedMs)
+{
+    if (!isTouchpadPlayOpen() || isCurrentlyBlockedByAnotherModalComponent())
+        return;
+    updateShakeMode();
+    if (pressedMs < nextTouchpadHitMs)
+        return;
+    constexpr float centreMax = 1.0f - touchpadCentreInset;
+    const bool edge = touch && (touch->x < touchpadCentreInset || touch->x > centreMax
+                             || touch->y < touchpadCentreInset || touch->y > centreMax);
+    const bool accepted = triggerLiveHit(velocity, edge);
+    if (accepted)
+        nextTouchpadHitMs = pressedMs + touchpadHitIntervalMs;
+#if JUCE_MAC && JUCE_DEBUG
+    TrackpadPlayView::logMidiHit(liveMidiNotes[edge ? 1 : 0], velocity, liveMidiInput > 0, accepted);
+#endif
+}
+
 void AudioPluginAudioProcessorEditor::handleShakeMouseMove(const juce::MouseEvent& event)
 {
+    if (isNonDirectionalLivePlayOpen())
+        return;
     updateShakeMode();
-    if (!shakeListening || event.mods.isAnyMouseButtonDown()
+    if (!liveMidiListening || event.mods.isAnyMouseButtonDown()
         || processorRef.isPlaybackBypassed())
         return;
     const auto position = event.getEventRelativeTo(this).position;
     if (!getLocalBounds().toFloat().contains(position)
-        || (shakeAreaOpen && (!shakeAreaSurface->getBounds().toFloat().contains(position)
+        || (livePlayGroup >= 0 && (!livePlaySurface->getBounds().toFloat().contains(position)
             || event.eventComponent == &trackMidiButton)))
     {
         shakeGesture.rebase();
@@ -1824,16 +1975,7 @@ void AudioPluginAudioProcessorEditor::handleShakeMouseMove(const juce::MouseEven
     if (const auto velocity = shakeGesture.move(position, juce::Time::getMillisecondCounterHiRes(),
                                                 static_cast<float>(getWidth())))
     {
-        const auto& groups = processorRef.getSampleGroups();
-        const int expectedNote = shakeTargetGroup >= 0 && shakeTargetGroup < static_cast<int>(groups.size())
-            ? (shakeGesture.isDownStroke() ? groups[static_cast<size_t>(shakeTargetGroup)].downMidiNote
-                                          : groups[static_cast<size_t>(shakeTargetGroup)].midiNote) : -1;
-        if (shakeVirtualInput > 0)
-            watchShakeMidiInput(expectedNote);
-        const bool accepted = shakeVirtualInput > 0
-            ? expectedNote >= 0 && virtualMidi.trigger(expectedNote, *velocity)
-            : processorRef.triggerShake(*velocity, shakeGesture.isDownStroke());
-        if (!accepted)
+        if (!triggerLiveHit(*velocity, shakeGesture.isDownStroke()))
         {
             shakeGesture = previous;
             shakeGesture.rebase();
@@ -1869,6 +2011,28 @@ void AudioPluginAudioProcessorEditor::insertRecordedMidi()
 
 void AudioPluginAudioProcessorEditor::timerCallback()
 {
+#if JUCE_DEBUG
+    using TraceEvent = AudioPluginAudioProcessor::InputControlTraceEvent;
+    const auto* instance = static_cast<const void*>(&processorRef);
+    const auto dropped = processorRef.drainInputControlTrace([instance] (const TraceEvent& event)
+    {
+        const auto* kind = event.kind == TraceEvent::Kind::onset ? "onset"
+            : event.kind == TraceEvent::Kind::suppressedRetrigger ? "retrigger-suppressed"
+            : event.kind == TraceEvent::Kind::localNoteOn ? "local-note-on" : "incoming-note-on";
+        const auto audioMs = event.sampleRate > 0.0 ? event.frame * 1000.0 / event.sampleRate : 0.0;
+        auto line = juce::String::formatted(
+            "instance=%p %s frame=%llu audioMs=%.3f note=%d velocity=%d trackMidi=%d",
+            instance, kind, static_cast<unsigned long long>(event.frame), audioMs,
+            event.note, event.velocity, static_cast<int>(event.trackMidi));
+        if (event.peak > 0.0f)
+            line += juce::String::formatted(" peakDbfs=%.1f", juce::Decibels::gainToDecibels(event.peak));
+        else
+            line += juce::String::formatted(" channel=%d", event.channel);
+        logInputControl(line);
+    });
+    if (dropped != 0)
+        logInputControl(juce::String::formatted("instance=%p dropped=%u", instance, static_cast<unsigned>(dropped)));
+#endif
     if (const auto result = abletonMidiBridge.poll())
     {
         midiInsertButton.setButtonText(result->wasOk() ? "ADDED" : "ADD MIDI");
@@ -2028,17 +2192,31 @@ void AudioPluginAudioProcessorEditor::resized()
                               modalBounds.getY() + 14, tabWidth, tabHeight);
     shakeButton.setBounds(modalBounds.getRight() - 100, modalBounds.getY() + 14, 86, tabHeight);
     trackMidiButton.setBounds(shakeButton.getX(), shakeButton.getBottom() + 6, 86, 26);
-    if (shakeAreaSurface != nullptr)
+    if (livePlaySurface != nullptr)
     {
         const auto area = sampleGrid.getBounds().getUnion(noiseBounds);
-        shakeAreaSurface->setBounds(area);
-        const int textTop = area.getCentreY() - 42;
-        shakeAreaInstruction.setBounds(area.getX() + 18, textTop, area.getWidth() - 36, 42);
+        livePlaySurface->setBounds(area);
+        const bool nonDirectional = isNonDirectionalLivePlayOpen();
+        const int textTop = area.getCentreY() - (nonDirectional ? 21 : 42);
+        livePlayInstruction.setBounds(area.getX() + 18, textTop, area.getWidth() - 36, 42);
         shakeAreaStartButton.setBounds(area.getCentreX() - 100, textTop + 48, 200, 32);
-        if (shakeAreaCloseButton != nullptr)
-            shakeAreaCloseButton->setBounds(area.getRight() - 26, area.getY() - 32, 26, 26);
-        if (shakeAreaOpen)
+        if (livePlayCloseButton != nullptr)
+            livePlayCloseButton->setBounds(area.getRight() - 26, area.getY() - 32, 26, 26);
+        if (nonDirectional)
+        {
+            trackMidiButton.setBounds(area.getCentreX() - 144, area.getBottom() - 48, 128, 30);
+            inputControlButton.setBounds(area.getCentreX() - 8, area.getBottom() - 48, 152, 30);
+        }
+        else if (livePlayGroup >= 0)
             trackMidiButton.setBounds(area.getCentreX() - 90, area.getBottom() - 48, 180, 30);
+#if JUCE_MAC
+        if (trackpadPlayView != nullptr)
+        {
+            trackpadPlayView->setBounds(livePlaySurface->getLocalBounds());
+            trackpadPlayView->setPassThroughBounds(
+                trackMidiButton.getBounds().getUnion(inputControlButton.getBounds()) - area.getPosition());
+        }
+#endif
     }
     midiDragButton.setBounds(modalBounds.getRight() - 222, modalBounds.getY() + 14, 110, tabHeight);
     midiInsertButton.setBounds(modalBounds.getX() + 14, modalBounds.getY() + 14, 110, tabHeight);

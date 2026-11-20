@@ -147,6 +147,29 @@ Recording/replaying notes retains random variation policy.
 See [shake UI](ui.md#cursor-shake-mode) and the
 [virtual MIDI audit](realtime-audio-audit-virtual-midi.md).
 
+### Touchpad-Generated Hits
+
+The numbered pad uses its lowest loaded pitch slot as the primary note for
+Touchpad Live Play. When a physical contact is available, a touch outside the
+centred 45% by 45% rectangle selects that pad's `p2` mapped MIDI note if loaded.
+Each pitch keeps its own velocity layers, variations and sample-specific
+settings. Both share the generated-note gate, local MIDI output and take capture
+used by cursor shake. See [Touchpad Live Play](ui.md#touchpad-live-play).
+
+### Microphone-Generated Hits
+
+INPUT CONTROL plays the non-directional pad's primary mapped MIDI note. At a
+peak of -35 dBFS or above, the detector measures the maximum absolute input
+amplitude in a 5 ms window, across both channels if stereo. It maps peak level
+linearly in dB from velocity 1 at -35 dBFS to 127 at -5 dBFS, with louder
+signals capped at 127. Onsets are at least 30 ms apart, and the input must
+stay below -38 dBFS for 12 ms before it rearms. To reduce retriggering from
+speaker bleed, a peak at least 4 dB quieter than the last accepted hit is
+suppressed if it arrives 210–260 ms later. Hits use the ordinary velocity
+layers and variations.
+TRACK MIDI determines whether the hit uses the local gate, take capture and
+supported plugin MIDI output or is sent through the DAW's MIDI input.
+
 ## Velocity Ranges
 
 Convert JUCE velocity once at note-on:

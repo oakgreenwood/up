@@ -21,6 +21,12 @@ void PercussionSynthesiser::dispatchMidi(const juce::MidiMessage& message)
     handleMidiEvent(message);
 }
 
+bool PercussionSynthesiser::hasActiveVoices() const noexcept
+{
+    return std::any_of(voices.begin(), voices.end(),
+                       [] (const auto* voice) { return voice->isVoiceActive(); });
+}
+
 void PercussionSynthesiser::clearLayerMappings()
 {
     downNoteRoots.fill(-1);

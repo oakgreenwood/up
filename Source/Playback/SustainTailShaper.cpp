@@ -25,7 +25,8 @@ bool SustainTailShaper::shouldShape(float amount) const noexcept
 float SustainTailShaper::getMakeupGain(float amount, bool hasTransientData) noexcept
 {
     constexpr float maxSustainShortenMakeupDb = 3.0f;
-    return juce::Decibels::decibelsToGain((hasTransientData ? amount : 0.0f) * maxSustainShortenMakeupDb);
+    return hasTransientData && amount > 0.0f
+        ? juce::Decibels::decibelsToGain(amount * maxSustainShortenMakeupDb) : 1.0f;
 }
 
 float SustainTailShaper::getGain(double timeSec, float amount)

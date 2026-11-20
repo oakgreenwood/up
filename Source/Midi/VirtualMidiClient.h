@@ -2,7 +2,7 @@
 
 #include "VirtualMidiProtocol.h"
 
-// Editor/message-thread owned. Only SHAKE strokes are sent; incoming host MIDI
+// Editor/message-thread owned. Only live-play hits are sent; incoming host MIDI
 // is never echoed. The DAW's returned MIDI is the sole playback/capture source.
 class VirtualMidiClient
 {

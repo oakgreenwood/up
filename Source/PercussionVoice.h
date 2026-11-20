@@ -51,6 +51,7 @@ public:
     void setWarpEnabledParam(std::atomic<bool>* p) { warpEnabledParam = p; }
     void setHostBpmMovingParam(std::atomic<bool>* p) { hostBpmMovingParam = p; }
     void setSampleSpecificCache(const SampleSpecificRealtimeCache* cache) noexcept { sampleSpecificCache = cache; }
+    void setFormantLatency(const std::atomic<int>* latency) noexcept { formantLatency = latency; }
     void setWarpCachePrewarmer(WarpCachePrewarmer* cache) noexcept { warpCachePrewarmer = cache; }
     void setPlayheadSequenceCounter(std::atomic<uint64_t>* counter) noexcept { playheadSequenceCounter = counter; }
     uint64_t getPlayheadSnapshot() const noexcept { return playheadSnapshot.load(std::memory_order_relaxed); }
@@ -127,6 +128,8 @@ private:
     NoteStartDeclicker noteStartDeclicker;
     PsolaFormantShifter formantShifter;
     FormantShifter formantColouration;
+    const std::atomic<int>* formantLatency = nullptr;
+    bool formantDelayActive = false;
     SampleEqualiser equaliser;
     SampleSpectrum* sampleSpectrum = nullptr;
     NoiseSidechain* noiseSidechain = nullptr;
@@ -138,7 +141,7 @@ private:
     juce::AudioBuffer<float> voiceScratch { 2, FormantShifter::hopSize };
     bool sourceFinished = false;
     bool equaliserTailReserved = false;
-    int formantTailRemaining = 0;
+    int effectTailRemaining = 0;
     int chokeLatencySamples = 0;
     std::array<int, 2> chokeFadeSamples { 1, 1 }; // Outgoing up, outgoing down.
     std::array<float, 2> chokeFadeScales { 1.0f, 1.0f };

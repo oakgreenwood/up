@@ -114,11 +114,68 @@ for the 2 ms edit fades and region-boundary crossfade.
 
 ## Sample Effects Modal
 
+### Touchpad Live Play
+
+LP on a non-directional pad opens the same `#D9D9D9` playing area used for
+cursor shake. It replaces the grid, section gap and noise panel. The area shows
+centred black (`#000000`) `HIT TOUCHPAD TO PLAY` and two bottom controls,
+`TRACK MIDI` and `INPUT CONTROL`. The first click or tap-to-click in the area
+plays a hit. The close cross or a click outside dismisses the area.
+The grid returns to its previous page.
+
+Pads with a separate `p2` pitch show a one-pixel `#989191` outline for the
+centre pitch zone, spanning 45% of the area's width and height.
+
+With a macOS trackpad, put the pointer inside the area before touching the
+trackpad so AppKit can report the contact. The centre 45% of both physical axes
+plays `p1`; outside that rectangle plays `p2` if it exists. The pointer position
+only determines whether the area receives the click. Force Touch measures the
+peak pressure during the first 65 ms of the press, or until release if sooner,
+and maps it linearly from velocity 30 at zero pressure to 127 at 0.40 pressure.
+Higher readings stay at 127. A Force Touch click with zero captured pressure
+plays at 30. Clicks that don't advertise pressure support use velocity 100.
+Mouse clicks and other clicks without contact coordinates use the primary pitch.
+Windows passes single-finger taps and clicks as mouse events, which use the
+primary pitch at velocity 100.
+
+The pad ignores another press within 30 ms of the last accepted hit, across
+both pitch zones. The interval starts at mouse-down, before any Force Touch
+measurement delay, and applies to both TRACK MIDI routes.
+
+TRACK MIDI uses the same saved switch and DAW return-input check as cursor
+shake. With it off, the area plays locally. With it on, the area sends the
+selected pitch and velocity through `ULICHPERC MIDI` while open and unbypassed.
+
+Turning on INPUT CONTROL switches the area to `PLAY INTO THE MIC`, hides the
+touchpad pitch outline and uses the same TRACK MIDI routing switch. Turning
+INPUT CONTROL off restores touchpad play. Closing the area stops detection.
+The switch retains its choice for
+the lifetime of the editor. See [microphone routing](building.md#live-play-audio-input)
+and [input velocity](samples-and-velocity.md#microphone-generated-hits).
+
+macOS Debug builds log Touchpad Live Play click events, pressure events, and
+MIDI velocities to the system log. To capture a trace while playing, run:
+
+```sh
+/usr/bin/log stream --style compact --predicate 'subsystem == "audio.ulichperc" AND category == "trackpad"'
+```
+
+To trace microphone Live Play in a macOS Debug build, run:
+
+```sh
+/usr/bin/log stream --style compact --predicate 'subsystem == "audio.ulichperc" AND category == "input-control"'
+```
+
+The trace shows detected peaks, suppressed retriggers and the local and incoming
+MIDI note-ons sent to playback while INPUT CONTROL is open. Use `audioMs` to compare the timing of
+events within a device session. The editor drains a fixed event queue and
+writes the logs. The trace contains peak levels and MIDI events only.
+
 ### Cursor Shake Mode
 
 The grid cell's LP button opens a dedicated shake area for its first directional
-pitch slot. Ordinary cells disable LP. The opaque `#D9D9D9` area replaces the
-sample grid, the 30-pixel section gap, and the noise panel, using their combined
+pitch slot. The opaque `#D9D9D9` area replaces the sample grid, the 30-pixel
+section gap, and the noise panel, using their combined
 bounds. The other global effects remain visible to its left. Opening the area
 always disables shake first; it does not immediately claim the MIDI helper or
 start generating notes.
@@ -206,7 +263,7 @@ an ordinary one-shot. Generated MIDI is described in
 
 ### Captured MIDI
 
-The cache captures SHAKE and mapped incoming MIDI notes during DAW playback,
+The cache captures Live Play and mapped incoming MIDI notes during DAW playback,
 recording and stopped audition. Playback start and recording start each replace
 the old take, including punch-in during playback. While neither playing nor
 recording, the first captured note after at least four seconds without a captured
@@ -582,8 +639,9 @@ the last page leaves unused space empty.
 Cell text and border use `#8E8B8B`, `#CA7A7A` during playback and black on hover
 (hover takes priority). Hover hides the notes and shows three 30-pixel circle
 buttons across the top: LP, ED and RP. Their background is `#A5A4A4`, with black
-text and outline. LP opens the dedicated shake area for directional sounds;
-ED opens editing; RP has no action yet. These are real JUCE button children,
+text and outline. LP opens the shake area for directional sounds and the
+touchpad area for other sounds. ED opens editing; RP has no action yet.
+These are real JUCE button children,
 with hover maintained while moving between the cell and its buttons.
 
 Pages are selected with 32-pixel horizontal lines and 15-pixel gaps, centred
@@ -594,6 +652,6 @@ snapshots for every pitch group. Any playing pitch/direction highlights its
 cell and page, including hidden pages. This follows voice playback rather than
 held MIDI keys and clears at voice end or bypass. No audio-thread UI callbacks,
 new shared containers, or new host parameters are introduced. The grid hides
-while the sample editor or shake area is open and preserves its current page.
+while the sample editor or Live Play area is open and preserves its current page.
 
 See the [grid handoff audit](realtime-audio-audit-sample-grid.md).

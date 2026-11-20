@@ -142,6 +142,7 @@ set(SourceFiles
         Source/Playback/SamplePlaybackRenderer.cpp
         Source/Playback/SustainTailShaper.h
         Source/Playback/SustainTailShaper.cpp
+        Source/Playback/InputTrigger.h
         Source/Playback/VelocityLayerGain.h
         Source/Playback/VelocityLayerGain.cpp
         Source/SampleMetadata.h
@@ -166,6 +167,8 @@ endif()
 juce_add_plugin(${PROJECT_NAME}
         COMPANY_NAME shroomnoise
         IS_SYNTH TRUE
+        MICROPHONE_PERMISSION_ENABLED TRUE
+        MICROPHONE_PERMISSION_TEXT "ulichperc uses audio input to trigger percussion in Live Play."
         NEEDS_MIDI_INPUT TRUE
         NEEDS_MIDI_OUTPUT TRUE
         IS_MIDI_EFFECT FALSE
@@ -190,6 +193,12 @@ target_sources(${PROJECT_NAME} PRIVATE
     ${RB_DIR}/single/RubberBandSingle.cpp
 )
 
+
+if (APPLE)
+    enable_language(OBJCXX)
+    set_target_properties(${PROJECT_NAME} PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES)
+    target_sources(${PROJECT_NAME} PRIVATE Source/UI/TrackpadPlayView.h Source/UI/TrackpadPlayView.mm)
+endif()
 
 # Headers live in external/rubberband/rubberband/...
 # so we add external/rubberband to include path.

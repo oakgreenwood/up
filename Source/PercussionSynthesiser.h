@@ -17,6 +17,8 @@ public:
     // storage without copying MIDI or replaying future events at chunk edges.
     void renderAudioRange(juce::AudioBuffer<float>& output, int start, int count);
     void dispatchMidi(const juce::MidiMessage& message);
+    // Voice storage is fixed while rendering. Call from audio or stopped preparation.
+    bool hasActiveVoices() const noexcept;
 
     void clearLayerMappings();
     // Audio-thread state; lifecycle callers must have rendering stopped.

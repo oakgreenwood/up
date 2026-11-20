@@ -84,7 +84,7 @@ void PercussionVoice::fadeOutForOppositeSample() noexcept
         && chokeFadeRemaining == 0)
     {
         const size_t index = currentSound->getDirection() == SampleDirection::up ? 0 : 1;
-        chokeDelayRemaining = chokeLatencySamples;
+        chokeDelayRemaining = formantDelayActive ? chokeLatencySamples : 0;
         chokeFadeRemaining = chokeFadeSamples[index];
         chokeFadeScale = chokeFadeScales[index];
     }
@@ -119,16 +119,20 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
     if (currentSound == nullptr || numSamples <= 0)
         return;
 
-    const float formantRatio = getCurrentFormantRatio();
-    formantShifter.setRatio(formantRatio);
-    formantColouration.setRatio(formantRatio);
+    if (formantDelayActive)
+    {
+        const float formantRatio = getCurrentFormantRatio();
+        formantShifter.setRatio(formantRatio);
+        formantColouration.setRatio(formantRatio);
+    }
     sampleMonoAmount.setTargetValue(getCurrentSampleMonoAmount());
     samplePan.setTargetValue(getCurrentSamplePan());
     updateEqualiser();
+    const bool equaliserActive = equaliser.hasTail();
     // A live edit during the existing formant drain also needs an EQ tail.
-    if (sourceFinished && !equaliserTailReserved && equaliser.hasTail())
+    if (sourceFinished && !equaliserTailReserved && equaliserActive)
     {
-        formantTailRemaining += static_cast<int>(SampleEqualiser::validSampleRate(getSampleRate())
+        effectTailRemaining += static_cast<int>(SampleEqualiser::validSampleRate(getSampleRate())
                                                  * SampleEqualiser::tailSeconds);
         equaliserTailReserved = true;
     }
@@ -140,7 +144,7 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
         const bool draining = sourceFinished;
         const bool choking = chokeFadeRemaining > 0;
         int count = juce::jmin(FormantShifter::hopSize, numSamples - rendered,
-                              draining ? formantTailRemaining : FormantShifter::hopSize);
+                              draining ? effectTailRemaining : FormantShifter::hopSize);
         if (choking)
             count = juce::jmin(count, chokeDelayRemaining > 0 ? chokeDelayRemaining : chokeFadeRemaining);
         voiceScratch.clear();
@@ -152,9 +156,11 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
         auto* right = voiceScratch.getWritePointer(1);
         for (int i = 0; i < count; ++i)
         {
-            formantShifter.process(left[i], right[i]);
-            // Retain the PSOLA option's EQ and saturation coloration.
-            formantColouration.process(left[i], right[i]);
+            if (formantDelayActive)
+            {
+                formantShifter.process(left[i], right[i]);
+                formantColouration.process(left[i], right[i]);
+            }
             // Narrow the final voice signal, including effect tails, before pan.
             const float monoAmount = sampleMonoAmount.getNextValue();
             if (monoAmount > 0.0f)
@@ -165,7 +171,13 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
                 right[i] = mid - side;
             }
             applySamplePan(left[i], right[i], stereoOutput);
-            equaliser.process(left[i], right[i]);
+            if (equaliserActive)
+                equaliser.process(left[i], right[i]);
+            else
+            {
+                left[i] = std::isfinite(left[i]) ? left[i] : 0.0f;
+                right[i] = std::isfinite(right[i]) ? right[i] : 0.0f;
+            }
             float chokeGain = 1.0f;
             if (choking)
             {
@@ -179,7 +191,9 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
                     right[i] *= chokeGain;
                 }
             }
-            const float noiseHit = noiseTriggerDelay.process(noiseHits[static_cast<size_t>(i)]) * chokeGain;
+            const float rawNoiseHit = noiseHits[static_cast<size_t>(i)];
+            const float noiseHit = (formantDelayActive ? noiseTriggerDelay.process(rawNoiseHit) : rawNoiseHit)
+                * chokeGain;
             if (noiseSidechain != nullptr && noiseHit > 0.0f)
                 noiseSidechain->addHit(spectrumNote, startSample + rendered + i, noiseHit);
             if (sampleSpectrum != nullptr)
@@ -197,11 +211,9 @@ void PercussionVoice::renderNextBlock(juce::AudioBuffer<float>& outputBuffer,
             break;
         }
         if (draining)
-        {
-            formantTailRemaining -= count;
-            if (formantTailRemaining <= 0)
-                clearActivePlayback();
-        }
+            effectTailRemaining -= count;
+        if (sourceFinished && effectTailRemaining <= 0)
+            clearActivePlayback();
     }
 }
 
@@ -210,7 +222,7 @@ void PercussionVoice::finishSourcePlayback() noexcept
     playheadSnapshot.store(0, std::memory_order_relaxed);
     sourceFinished = true;
     equaliserTailReserved = equaliser.hasTail();
-    formantTailRemaining = formantDrainSamples + (equaliserTailReserved
+    effectTailRemaining = (formantDelayActive ? formantDrainSamples : 0) + (equaliserTailReserved
         ? static_cast<int>(SampleEqualiser::validSampleRate(getSampleRate()) * SampleEqualiser::tailSeconds) : 0);
 }
 
@@ -407,10 +419,14 @@ void PercussionVoice::beginPlayback(float velocity)
     chokeDelayRemaining = chokeFadeRemaining = 0;
     sourceFinished = false;
     equaliserTailReserved = false;
-    formantTailRemaining = 0;
-    const float formantRatio = getCurrentFormantRatio();
-    formantShifter.reset(formantRatio);
-    formantColouration.reset(formantRatio);
+    effectTailRemaining = 0;
+    formantDelayActive = formantLatency == nullptr || formantLatency->load(std::memory_order_relaxed) > 0;
+    if (formantDelayActive)
+    {
+        const float formantRatio = getCurrentFormantRatio();
+        formantShifter.reset(formantRatio);
+        formantColouration.reset(formantRatio);
+    }
     updateEqualiser(true);
     equaliser.reset();
     activeWarpCache.reset();
@@ -574,7 +590,7 @@ void PercussionVoice::clearActivePlayback()
     playheadSequence = 0;
     sourceFinished = false;
     equaliserTailReserved = false;
-    formantTailRemaining = 0;
+    effectTailRemaining = 0;
     clearCurrentNote();
 
     currentSound = nullptr;

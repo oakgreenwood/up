@@ -35,8 +35,10 @@ when behavior changes.
   per-MIDI-note UI activity velocities and last-played sample memory.
 - `Source/PluginProcessor.*` incoming note-on generations and `PluginEditor.*`
   pending note checks: SHAKE return-input timeout and settings alert.
-- `Source/Midi/ShakeMidiState.h`: bounded cursor-trigger queue, generated note
+- `Source/Midi/ShakeMidiState.h`: bounded Live Play hit queue, generated note
   scheduling and MIDI output for VST3/AU.
+- `Source/Playback/InputTrigger.h`: peak detection and velocity mapping for
+  microphone-driven Live Play.
 - `Source/Midi/ShakeMidiTake.h`: fixed-slot live sample-MIDI take cache,
   transport/idle boundaries and message-thread MIDI-file export.
 - `Source/Midi/VirtualMidiClient.*` and `VirtualMidiProtocol.h`: editor-only
@@ -44,6 +46,8 @@ when behavior changes.
 - `integrations/virtual-midi/`: separate system MIDI helper, per-user installation
   and cross-DAW setup; macOS CoreMIDI and Windows 11 MIDI Services.
 - `Source/UI/ShakeGesture.h`: message-thread cursor speed and reversal detection.
+- `Source/UI/TrackpadPlayView.*`: macOS AppKit trackpad position and Force Touch
+  velocity for Live Play.
 - `Source/UI/AbletonMidiBridgeClient.*`: separate legacy message-thread ADD MIDI
   request client; SHAKE does not use a DAW-specific transport companion.
 - `Source/UI/SampleGroupSelector.cpp`: paged 3 x 3 sample grid, combined

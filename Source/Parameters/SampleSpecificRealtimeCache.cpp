@@ -7,6 +7,7 @@
 
 static_assert(std::atomic<float>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
+static_assert(std::atomic<uint32_t>::is_always_lock_free);
 
 SampleSpecificRealtimeCache::SampleSpecificRealtimeCache()
 {
@@ -25,6 +26,7 @@ void SampleSpecificRealtimeCache::reset() noexcept
         semitones.store(PluginParameters::sampleFormantSemitonesDefault, std::memory_order_relaxed);
     for (auto& ratio : formantRatioByMidiNote)
         ratio.store(1.0f, std::memory_order_relaxed);
+    formantBypassRevision.fetch_add(1, std::memory_order_release);
     for (auto& gainDb : gainDbByMidiNote)
         gainDb.store(PluginParameters::sampleGainDbDefault, std::memory_order_relaxed);
     for (auto& gainLinear : gainLinearByMidiNote)
@@ -91,8 +93,11 @@ void SampleSpecificRealtimeCache::setFormantSemitonesForMidiNote(int midiNote, f
 
     semitones = juce::jlimit(PluginParameters::sampleFormantSemitonesMinimum,
                             PluginParameters::sampleFormantSemitonesMaximum, semitones);
-    formantRatioByMidiNote[(size_t) midiNote].store(std::exp2(semitones / 12.0f), std::memory_order_relaxed);
+    const float ratio = std::exp2(semitones / 12.0f);
+    const float previous = formantRatioByMidiNote[(size_t) midiNote].exchange(ratio, std::memory_order_relaxed);
     formantSemitonesByMidiNote[(size_t) midiNote].store(semitones, std::memory_order_relaxed);
+    if ((previous == 1.0f) != (ratio == 1.0f))
+        formantBypassRevision.fetch_add(1, std::memory_order_release);
 }
 
 float SampleSpecificRealtimeCache::getFormantSemitonesForMidiNote(int midiNote) const noexcept

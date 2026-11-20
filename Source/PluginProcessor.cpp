@@ -4,6 +4,7 @@
 #include "PercussionVoice.h"
 #include "SampleLibrary/PercussionSampleLibrary.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -39,9 +40,14 @@ namespace
 }
 
 AudioPluginAudioProcessor::AudioPluginAudioProcessor()
-    : AudioProcessor (BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor (BusesProperties().withInput("Input Control", juce::AudioChannelSet::mono(), false)
+                                       .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       parameters(*this, nullptr, PluginParameters::stateType, PluginParameters::createParameterLayout())
 {
+    // Standalone opens the selected device input. AUv2 needs a matching
+    // stream format on its input element even when the host leaves it unconnected.
+    if (wrapperType == wrapperType_Standalone || wrapperType == wrapperType_AudioUnit)
+        enableAllBuses();
     DBG("=== AudioPluginAudioProcessor constructor ===");
     for (auto& generation : incomingNoteOnGenerations)
         generation.store(0, std::memory_order_relaxed);
@@ -75,6 +81,7 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     updateVoiceSharedState();
     for (const auto& parameter : PluginParameters::sampleSpecificParameters)
         parameters.addParameterListener(parameter.id, this);
+    startTimerHz(60);
     DBG("=== Constructor done ===");
 }
 
@@ -104,6 +111,7 @@ void AudioPluginAudioProcessor::updateVoiceSharedState()
             v->setHostBpmParam(hostTempo.getBpmAtomic());
             v->setHostBpmMovingParam(hostTempo.getMovingAtomic());
             v->setSampleSpecificCache(&sampleSpecificCache);
+            v->setFormantLatency(&activeFormantLatency);
             v->setPlayheadSequenceCounter(&samplePlayheadSequenceCounter);
             v->setSampleSpectrum(&sampleSpectrum);
             v->setNoiseSidechain(&noiseSidechain);
@@ -123,16 +131,21 @@ bool AudioPluginAudioProcessor::isSampleGroupDirectional(int groupIndex) const n
         && sampleGroups[static_cast<size_t>(groupIndex)].hasDirectionalSamples;
 }
 
-void AudioPluginAudioProcessor::setShakeSampleGroup(int groupIndex) noexcept
-{
-    shakeMidi.setTarget(isSampleGroupDirectional(groupIndex)
-        ? sampleGroups[static_cast<size_t>(groupIndex)].midiNote : -1);
-}
-
 void AudioPluginAudioProcessor::setVirtualMidiInput(int input)
 {
     virtualMidiInput.store(juce::jlimit(0, 1, input), std::memory_order_relaxed);
     updateHostDisplay(juce::AudioProcessorListener::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void AudioPluginAudioProcessor::setInputControlTarget(int note, bool trackMidi) noexcept
+{
+    // The low byte holds note + 1 (zero disables input). The route bit and
+    // upper generation distinguish hits queued before a mode or target change.
+    const auto route = note >= 0 && note < 128
+        ? (static_cast<uint64_t>(note + 1) | (trackMidi ? inputControlTrackMidiBit : 0)) : 0;
+    const auto previous = inputControlTarget.load(std::memory_order_relaxed);
+    if ((previous & 0x1ff) != route)
+        inputControlTarget.store((((previous >> 9) + 1) << 9) | route, std::memory_order_relaxed);
 }
 
 const PercussionSound* AudioPluginAudioProcessor::getRepresentativeSampleSound(int groupIndex) const noexcept
@@ -416,6 +429,16 @@ void AudioPluginAudioProcessor::storeSampleSpecificCache()
 
 AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 {
+    if (const auto* manager = juce::MessageManager::getInstanceWithoutCreating();
+        manager != nullptr && !manager->isThisTheMessageThread())
+    {
+        // stopTimer alone can leave a message callback in flight during
+        // background-thread destruction. Wait only during stopped teardown.
+        const juce::MessageManagerLock lock;
+        stopTimer();
+    }
+    else
+        stopTimer();
     for (const auto& parameter : PluginParameters::sampleSpecificParameters)
         parameters.removeParameterListener(parameter.id, this);
     suspendProcessing(true);
@@ -428,14 +451,46 @@ AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 
 //==============================================================================
 
+void AudioPluginAudioProcessor::refreshFormantBypassTarget() noexcept
+{
+    const auto revision = sampleSpecificCache.getFormantBypassRevision();
+    if (revision == observedFormantBypassRevision)
+        return;
+
+    observedFormantBypassRevision = revision;
+    formantRequired = std::any_of(sampleGroups.begin(), sampleGroups.end(), [this] (const auto& group)
+    {
+        return sampleSpecificCache.getFormantRatioForMidiNote(group.midiNote) != 1.0f;
+    });
+}
+
+void AudioPluginAudioProcessor::reportFormantLatency()
+{
+    // The host can prepare on a different thread from the timer. Serialize
+    // JUCE's latency setter without waiting for a host callback to finish.
+    if (reportingFormantLatency.test_and_set(std::memory_order_acquire))
+        return;
+
+    setLatencySamples(activeFormantLatency.load(std::memory_order_relaxed));
+    reportingFormantLatency.clear(std::memory_order_release);
+}
+
 void AudioPluginAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     hostRecording.store(false, std::memory_order_relaxed);
     shakeMidiTake.finish();
-    setLatencySamples(FormantShifter::latencySamples + PsolaFormantShifter::latencyForSampleRate(sampleRate));
+    preparedFormantLatency = FormantShifter::latencySamples + PsolaFormantShifter::latencyForSampleRate(sampleRate);
+    refreshFormantBypassTarget();
+    activeFormantLatency.store(formantRequired ? preparedFormantLatency : 0, std::memory_order_relaxed);
+    reportFormantLatency();
     sampler.setCurrentPlaybackSampleRate(sampleRate);
     sampler.resetPlaybackSequence();
     shakeMidi.prepare(sampleRate);
+    inputTrigger.prepare(sampleRate);
+#if JUCE_DEBUG
+    inputControlTraceFrame = 0;
+#endif
+    inputControlResetGeneration.fetch_add(1, std::memory_order_relaxed);
     sampleSpectrum.sampleRate.store(static_cast<float>(SampleEqualiser::validSampleRate(sampleRate)),
                                     std::memory_order_relaxed);
     rzhavProcessor.prepare(sampleRate);
@@ -456,6 +511,8 @@ void AudioPluginAudioProcessor::releaseResources()
     hostRecording.store(false, std::memory_order_relaxed);
     shakeMidiTake.finish();
     shakeMidi.resetForPlayback();
+    inputTrigger.reset();
+    inputControlResetGeneration.fetch_add(1, std::memory_order_relaxed);
     samplePlaybackBypassed.store(true, std::memory_order_relaxed);
     rzhavProcessor.reset();
     ottProcessor.reset();
@@ -465,28 +522,94 @@ void AudioPluginAudioProcessor::releaseResources()
 
 bool AudioPluginAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
-#if JucePlugin_IsMidiEffect
-    juce::ignoreUnused(layouts);
-    return true;
-#else
     if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono() &&
         layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
         return false;
 
-#if ! JucePlugin_IsSynth
-    if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
-        return false;
-#endif
-
-    return true;
-#endif
+    const auto input = layouts.getMainInputChannelSet();
+    return input.isDisabled() || input == juce::AudioChannelSet::mono() || input == juce::AudioChannelSet::stereo();
 }
 
-void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
+#if JUCE_DEBUG
+void AudioPluginAudioProcessor::traceInputControl(InputControlTraceEvent::Kind kind, int position, int note,
+                                                 int velocity, int channel, bool trackMidi, float peak) noexcept
+{
+    const auto write = inputControlTraceFifo.write(1);
+    if (write.blockSize1 == 0)
+    {
+        inputControlTraceDropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    inputControlTrace[static_cast<size_t>(write.startIndex1)] = {
+        kind, inputControlTraceFrame + static_cast<uint64_t>(position), getSampleRate(),
+        peak, note, velocity, channel, trackMidi
+    };
+}
+#endif
+
+void AudioPluginAudioProcessor::collectInputTriggers(const juce::AudioBuffer<float>& input, int channels,
+                                                     uint64_t target, double nowMs) noexcept
+{
+    if (target != observedInputControlTarget)
+    {
+        inputTrigger.reset();
+        observedInputControlTarget = target;
+    }
+    const int note = static_cast<int>(target & 0xff) - 1;
+    if (note < 0)
+        return;
+
+    const bool trackMidi = (target & inputControlTrackMidiBit) != 0;
+    const auto reset = inputControlResetGeneration.load(std::memory_order_relaxed);
+    const auto* const* samples = input.getArrayOfReadPointers();
+    const int frames = input.getNumSamples();
+    int hits = 0;
+    for (int frame = 0; frame < frames; ++frame)
+    {
+        float level = 0.0f;
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            const float sample = samples[channel][frame];
+            if (std::isfinite(sample))
+                level = juce::jmax(level, std::abs(sample));
+        }
+        const int velocity = inputTrigger.process(level);
+#if JUCE_DEBUG
+        if (velocity != 0)
+        {
+            const bool suppressed = velocity == InputTrigger::suppressedRetrigger;
+            const auto kind = suppressed ? InputControlTraceEvent::Kind::suppressedRetrigger
+                                         : InputControlTraceEvent::Kind::onset;
+            traceInputControl(kind, frame, note, suppressed ? 0 : velocity, 0, trackMidi, inputTrigger.getPeak());
+        }
+#endif
+        if (velocity > 0 && hits < ShakeMidiState::maxTriggersPerBlock)
+        {
+            if (trackMidi)
+            {
+                const auto write = inputControlFifo.write(1);
+                write.forEach([&] (int index)
+                {
+                    inputControlHits[static_cast<size_t>(index)] = { target, reset, velocity, nowMs };
+                });
+            }
+            else
+                shakeMidi.addInputTrigger(frames, frame, note, velocity);
+            ++hits;
+        }
+    }
+}
+
+void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& processBuffer,
                                              juce::MidiBuffer& midiMessages)
 {
+    auto buffer = getBusBuffer(processBuffer, false, 0);
     samplePlaybackBypassed.store(false, std::memory_order_relaxed);
     juce::ScopedNoDenormals noDenormals;
+    refreshFormantBypassTarget();
+    const int requestedLatency = formantRequired ? preparedFormantLatency : 0;
+    if (requestedLatency != activeFormantLatency.load(std::memory_order_relaxed) && !sampler.hasActiveVoices())
+        activeFormantLatency.store(requestedLatency, std::memory_order_relaxed);
     const double nowSec = juce::Time::getMillisecondCounterHiRes() * 0.001;
     const auto tempo = hostTempo.update(getPlayHead(), nowSec);
     if (tempo.hostPositionAvailable)
@@ -500,10 +623,18 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         sampler.resetPlaybackSequence();
         shakeMidi.resetForPlayback();
     }
-    // SHAKE always returns through the DAW input. Reject local note-ons while
-    // it is enabled; pending direct note-offs can still flush.
-    shakeMidi.beginBlock(buffer.getNumSamples(), !isShakeUsingVirtualMidi(), nowSec * 1000.0);
-
+    const auto inputTarget = inputControlTarget.load(std::memory_order_relaxed);
+    const int inputChannels = getMainBusNumInputChannels();
+    const bool inputControl = (inputTarget & 0xff) != 0;
+    const bool detectInput = inputControl && inputChannels > 0;
+#if JUCE_DEBUG
+    const int inputTraceNote = static_cast<int>(inputTarget & 0xff) - 1;
+    const bool inputTraceTrackMidi = (inputTarget & inputControlTrackMidiBit) != 0;
+#endif
+    shakeMidi.beginBlock(buffer.getNumSamples(), !inputControl && !isShakeUsingVirtualMidi(),
+                         nowSec * 1000.0, detectInput && (inputTarget & inputControlTrackMidiBit) == 0);
+    // Input and output may alias. Scan input before clearing the output bus.
+    collectInputTriggers(processBuffer, inputChannels, detectInput ? inputTarget : 0, nowSec * 1000.0);
     buffer.clear();
 
     const bool warpEnabledNow = true;
@@ -566,6 +697,11 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             if (event.resetSequence)
                 sampler.resetPlaybackSequence();
             const auto& message = event.message;
+#if JUCE_DEBUG
+            if (inputControl && message.isNoteOn() && message.getNoteNumber() == inputTraceNote)
+                traceInputControl(InputControlTraceEvent::Kind::localNoteOn, event.position,
+                                  inputTraceNote, message.getVelocity(), message.getChannel(), inputTraceTrackMidi);
+#endif
             midiNoteActivity.handleMidiMessage(message);
             sampler.dispatchMidi(message);
             shakeMidiTake.capture(message, event.position);
@@ -581,6 +717,11 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             if (message.isNoteOn())
             {
                 const int note = message.getNoteNumber();
+#if JUCE_DEBUG
+                if (inputControl && midiNoteActivity.isSampleNote(note))
+                    traceInputControl(InputControlTraceEvent::Kind::incomingNoteOn, position,
+                                      note, message.getVelocity(), message.getChannel(), inputTraceTrackMidi);
+#endif
                 if (note >= 0 && note < 128)
                     incomingNoteOnGenerations[static_cast<size_t>(note)].fetch_add(1, std::memory_order_relaxed);
             }
@@ -631,11 +772,14 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     sampleSpectrum.endBlock();
     shakeMidiTake.endBlock();
     shakeMidi.writeOutput(midiMessages, wrapperType == wrapperType_VST3 || wrapperType == wrapperType_AudioUnit);
+#if JUCE_DEBUG
+    inputControlTraceFrame += static_cast<uint64_t>(buffer.getNumSamples());
+#endif
 }
 
 //==============================================================================
 
-void AudioPluginAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer,
+void AudioPluginAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& processBuffer,
                                                     juce::MidiBuffer& midiMessages)
 {
     if (auto* playHead = getPlayHead())
@@ -645,17 +789,21 @@ void AudioPluginAudioProcessor::processBlockBypassed(juce::AudioBuffer<float>& b
     {
         shakeMidiTake.finish();
         shakeMidi.resetForPlayback();
+        inputTrigger.reset();
+        inputControlResetGeneration.fetch_add(1, std::memory_order_relaxed);
     }
-    shakeMidi.beginBlock(buffer.getNumSamples(), false, juce::Time::getMillisecondCounterHiRes());
+    shakeMidi.beginBlock(processBuffer.getNumSamples(), false, juce::Time::getMillisecondCounterHiRes());
     for (int i = 0; i < shakeMidi.size(); ++i)
     {
         midiNoteActivity.handleMidiMessage(shakeMidi.get(i).message);
         sampler.dispatchMidi(shakeMidi.get(i).message);
     }
     shakeMidi.writeOutput(midiMessages, wrapperType == wrapperType_VST3 || wrapperType == wrapperType_AudioUnit);
-    // This instrument has no input to delay/pass through. Keep bypass silent
-    // without JUCE's default assertion that a bypassed processor has zero latency.
-    buffer.clear();
+    // The input bus supplies trigger audio only. Keep the output silent in bypass.
+    getBusBuffer(processBuffer, false, 0).clear();
+#if JUCE_DEBUG
+    inputControlTraceFrame += static_cast<uint64_t>(processBuffer.getNumSamples());
+#endif
     sampleSpectrum.beginBlock(0, -1);
     backgroundNoise.reset();
     noiseSidechain.reset();
@@ -682,8 +830,9 @@ double AudioPluginAudioProcessor::getTailLengthSeconds() const
     const double hostRate = getSampleRate();
     const double rate = std::isfinite(hostRate) && hostRate >= 1000.0 && hostRate <= 768000.0
         ? hostRate : 44100.0;
-    return (double) (FormantShifter::tailSamples + PsolaFormantShifter::tailForSampleRate(rate))
-           / rate + SampleEqualiser::tailSeconds + OttProcessor::tailSeconds;
+    const double formantTail = activeFormantLatency.load(std::memory_order_relaxed) > 0
+        ? (double) (FormantShifter::tailSamples + PsolaFormantShifter::tailForSampleRate(rate)) / rate : 0.0;
+    return formantTail + SampleEqualiser::tailSeconds + OttProcessor::tailSeconds;
 }
 
 int AudioPluginAudioProcessor::getNumPrograms() { return 1; }

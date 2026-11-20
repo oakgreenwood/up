@@ -6,7 +6,7 @@ Check current scripts and target settings before running commands.
 ## Targets And Dependencies
 
 - Project `ulichperc`; product `ulichpercs`; company `shroomnoise`.
-- Synth with MIDI input and generated shake MIDI output (`NEEDS_MIDI_OUTPUT=TRUE`).
+- Synth with MIDI input and generated Live Play MIDI output (`NEEDS_MIDI_OUTPUT=TRUE`).
 - Separate `ULICHPERCMidi` background helper publishes the `ULICHPERC MIDI` input for
   recording on the instrument's own track. See
   [virtual MIDI installation/build requirements](../integrations/virtual-midi/README.md).
@@ -32,6 +32,9 @@ Check current scripts and target settings before running commands.
   PSOLA implementation needs no Python, Praat or additional dependency and uses
   the same sources on macOS arm64/x86_64/universal and Windows.
 - macOS defaults to universal `arm64;x86_64` unless overridden.
+- macOS builds `Source/UI/TrackpadPlayView.mm` as Objective-C++17 using AppKit
+  and JUCE's existing NSView embedding on arm64 and x86_64. Windows uses the
+  shared JUCE mouse-event path for touchpad clicks.
 - Global OTT compiles from `Source/Effects/OttProcessor.*` using the already
   linked JUCE DSP module; no additional dependency or platform-specific code is
   required for macOS or Windows.
@@ -70,8 +73,8 @@ The script then uses `sudo` to replace the system VST3 bundle in
 
 ## Shake MIDI Recording
 
-To capture without routing plugin MIDI output, enable SHAKE or play incoming
-MIDI notes mapped to samples. Capture works during playback, recording and
+To capture without routing plugin MIDI output, play a Live Play pad, enable
+SHAKE or play incoming MIDI notes mapped to samples. Capture works during playback, recording and
 stopped audition. Drag `DRAG MIDI` from the sample editor
 onto the plugin's own MIDI track or another MIDI track. It creates a type-0,
 single-track standard MIDI file at 960 ticks per quarter note, with note/channel/
@@ -123,6 +126,21 @@ least 2048 bytes before processing. Generated output is capped at 224 short
 events (2016 serialized bytes), preserving that capacity without audio-thread
 resizing/swapping. Other wrapper types do not write generated output. Re-audit
 this guarantee if updating JUCE or enabling additional plugin formats.
+
+## Live Play Audio Input
+
+The instrument exposes one mono/stereo `Input Control` audio bus. VST3
+advertises it as a sidechain, disabled until activated by the host. AUv2
+initializes the input format and receives silence with no source connected.
+In a DAW that supports sidechaining into the instrument, route a microphone
+or a monitored audio track to its input.
+See [Ableton's sidechain routing guide](https://help.ableton.com/hc/en-us/articles/209775325-Sidechaining-a-third-party-plug-in)
+or [Logic Pro's plug-in window guide](https://support.apple.com/en-us/guide/logicpro/lgcpbc21a1fd/mac).
+
+Standalone enables the input bus by default. Select the microphone in
+Audio/MIDI Settings, grant microphone access on macOS and clear JUCE's
+`Mute audio input` option. The macOS bundle includes the microphone usage
+description. The detector and input layout code are shared with Windows VST3.
 
 ## Standalone App (macOS)
 

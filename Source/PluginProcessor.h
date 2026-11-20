@@ -12,6 +12,7 @@
 #include "Effects/SampleSpectrum.h"
 #include "Effects/NoiseSidechain.h"
 #include "Playback/BackgroundNoisePlayer.h"
+#include "Playback/InputTrigger.h"
 #include "Midi/MidiNoteActivityState.h"
 #include "Midi/ShakeMidiState.h"
 #include "Midi/ShakeMidiTake.h"
@@ -26,7 +27,9 @@
 //==============================================================================
 class AudioPluginAudioProcessor final : public juce::AudioProcessor,
                                         public Ulichperc::HostRecordingCallbackReceiver,
-                                        private juce::AudioProcessorValueTreeState::Listener
+                                        private juce::VST3ClientExtensions,
+                                        private juce::AudioProcessorValueTreeState::Listener,
+                                        private juce::Timer
 {
 public:
     static constexpr int midiNoteActivityCount = MidiNoteActivityState::getMidiNoteCount();
@@ -93,9 +96,45 @@ public:
             ? incomingNoteOnGenerations[static_cast<size_t>(note)].load(std::memory_order_relaxed) : 0;
     }
     bool isSampleGroupDirectional(int groupIndex) const noexcept;
-    // Message-thread-only shake control. Session state is deliberately not saved.
-    void setShakeSampleGroup(int groupIndex) noexcept;
-    bool triggerShake(int velocity, bool down = false) noexcept { return shakeMidi.trigger(velocity, down); }
+    // Message-thread-only live-play control.
+    void setLivePlayNotes(int primaryNote, int alternateNote = -1) noexcept
+    { shakeMidi.setTarget(primaryNote, alternateNote); }
+    void setInputControlTarget(int note, bool trackMidi = false) noexcept;
+#if JUCE_DEBUG
+    struct InputControlTraceEvent
+    {
+        enum class Kind { onset, suppressedRetrigger, localNoteOn, incomingNoteOn };
+        Kind kind;
+        uint64_t frame;
+        double sampleRate;
+        float peak;
+        int note, velocity, channel;
+        bool trackMidi;
+    };
+    // Message thread only. All formatting and logging happen in the editor.
+    template <typename Callback>
+    uint32_t drainInputControlTrace(Callback&& callback)
+    {
+        const auto read = inputControlTraceFifo.read(static_cast<int>(inputControlTrace.size()));
+        read.forEach([&] (int index) { callback(inputControlTrace[static_cast<size_t>(index)]); });
+        return inputControlTraceDropped.exchange(0, std::memory_order_relaxed);
+    }
+#endif
+    template <typename Callback>
+    void forEachInputControlVelocity(Callback&& callback)
+    {
+        const auto read = inputControlFifo.read(static_cast<int>(inputControlHits.size()));
+        const auto target = inputControlTarget.load(std::memory_order_relaxed);
+        const auto reset = inputControlResetGeneration.load(std::memory_order_relaxed);
+        const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+        read.forEach([&] (int index)
+        {
+            const auto& hit = inputControlHits[static_cast<size_t>(index)];
+            if (hit.target == target && hit.reset == reset && nowMs - hit.timeMs <= 250.0)
+                callback(hit.velocity);
+        });
+    }
+    bool triggerLivePlay(int velocity, bool alternate) noexcept { return shakeMidi.trigger(velocity, alternate); }
     uint32_t getShakeResetGeneration() const noexcept { return shakeMidi.getResetGeneration(); }
     // TRACK MIDI: 0 = internal SHAKE, 1 = ULICHPERC MIDI / returned DAW input.
     int getVirtualMidiInput() const noexcept { return virtualMidiInput.load(std::memory_order_relaxed); }
@@ -143,9 +182,19 @@ public:
     bool applySampleSpecificParameterToAll(const juce::String& parameterId, float value);
 
 private:
+    juce::VST3ClientExtensions* getVST3ClientExtensions() override { return this; }
+    bool getPluginHasMainInput() const override { return false; }
+    void collectInputTriggers(const juce::AudioBuffer<float>&, int channels, uint64_t target, double nowMs) noexcept;
+#if JUCE_DEBUG
+    void traceInputControl(InputControlTraceEvent::Kind, int position, int note, int velocity,
+                           int channel, bool trackMidi, float peak = 0.0f) noexcept;
+#endif
     const PercussionSound* getRepresentativeSampleSound(int groupIndex) const noexcept;
     void addPercussionVoices();
     void updateVoiceSharedState();
+    void refreshFormantBypassTarget() noexcept;
+    void reportFormantLatency();
+    void timerCallback() override { reportFormantLatency(); }
     void clampSelectedSampleGroupIndex() noexcept;
     void parameterChanged(const juce::String& parameterId, float value) override;
     void synchroniseSelectedSampleParameters();
@@ -179,6 +228,21 @@ private:
     std::array<std::atomic<uint32_t>, 128> incomingNoteOnGenerations;
     ShakeMidiState shakeMidi;
     ShakeMidiTake shakeMidiTake;
+    InputTrigger inputTrigger;
+    uint64_t observedInputControlTarget = 0;
+    static constexpr uint64_t inputControlTrackMidiBit = 0x100;
+    struct InputControlHit { uint64_t target; uint32_t reset; int velocity; double timeMs; };
+    std::array<InputControlHit, ShakeMidiState::maxTriggersPerBlock + 1> inputControlHits {};
+    juce::AbstractFifo inputControlFifo { static_cast<int>(inputControlHits.size()) };
+    static_assert(std::atomic<uint64_t>::is_always_lock_free);
+    std::atomic<uint64_t> inputControlTarget { 0 };
+    std::atomic<uint32_t> inputControlResetGeneration { 0 };
+#if JUCE_DEBUG
+    uint64_t inputControlTraceFrame = 0;
+    std::array<InputControlTraceEvent, 129> inputControlTrace {};
+    juce::AbstractFifo inputControlTraceFifo { static_cast<int>(inputControlTrace.size()) };
+    std::atomic<uint32_t> inputControlTraceDropped { 0 };
+#endif
     static_assert(std::atomic<bool>::is_always_lock_free);
     static_assert(std::atomic<int>::is_always_lock_free);
     std::atomic<int> virtualMidiInput { 0 };
@@ -193,6 +257,11 @@ private:
     std::atomic<int> selectedSampleGroupIndex { -1 };
     SampleSpecificParameterState sampleSpecificParameters;
     SampleSpecificRealtimeCache sampleSpecificCache;
+    int preparedFormantLatency = 0;
+    uint32_t observedFormantBypassRevision = 0;
+    bool formantRequired = false;
+    std::atomic<int> activeFormantLatency { 0 };
+    std::atomic_flag reportingFormantLatency = ATOMIC_FLAG_INIT;
     std::unique_ptr<WarpCachePrewarmer> warpCachePrewarmer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessor)

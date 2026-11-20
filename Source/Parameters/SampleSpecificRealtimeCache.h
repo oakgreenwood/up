@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 
 class SampleSpecificRealtimeCache final
 {
@@ -38,6 +39,8 @@ public:
     void setFormantSemitonesForMidiNote(int midiNote, float semitones) noexcept;
     float getFormantSemitonesForMidiNote(int midiNote) const noexcept;
     float getFormantRatioForMidiNote(int midiNote) const noexcept;
+    uint32_t getFormantBypassRevision() const noexcept
+    { return formantBypassRevision.load(std::memory_order_acquire); }
 
     void setEqFrequencyForMidiNote(int note, int band, float value) noexcept;
     void setEqGainForMidiNote(int note, int band, float value) noexcept;
@@ -65,4 +68,5 @@ private:
     std::array<std::atomic<bool>, midiNoteCount> loopTapeModeByMidiNote;
     std::array<std::atomic<float>, midiNoteCount> formantSemitonesByMidiNote;
     std::array<std::atomic<float>, midiNoteCount> formantRatioByMidiNote;
+    std::atomic<uint32_t> formantBypassRevision { 0 };
 };

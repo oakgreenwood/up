@@ -32,13 +32,13 @@ public:
         for (auto* button : { &lp, &ed, &rp })
             addChildComponent(*button);
         addMouseListener(this, true);
-        lp.setTooltip("Open cursor shake area");
+        lp.setTooltip("Open live play area");
         ed.setTooltip("Edit sample");
         rp.setTooltip("Replace sample (not yet available)");
         lp.onClick = [this]
         {
-            if (owner.onShake && directionalGroup >= 0)
-                owner.onShake(directionalGroup);
+            if (owner.onLivePlay)
+                owner.onLivePlay(directionalGroup >= 0 ? directionalGroup : firstPitchGroup);
         };
         ed.onClick = [this]
         {
@@ -80,7 +80,7 @@ public:
         repaint();
     }
     SampleGroupSelector& owner;
-    int sampleNumber, editGroup = -1, directionalGroup = -1;
+    int sampleNumber, editGroup = -1, firstPitchGroup = -1, directionalGroup = -1;
     std::vector<int> groups;
     juce::String notes;
     bool playing = false, hovered = false;
@@ -124,6 +124,8 @@ void SampleGroupSelector::setSampleGroups(
         cell.groups.push_back(i);
         if (cell.editGroup < 0)
             cell.editGroup = i;
+        if (cell.firstPitchGroup < 0 || group.pitchIndex < groups[static_cast<size_t>(cell.firstPitchGroup)].pitchIndex)
+            cell.firstPitchGroup = i;
         if (cell.notes.isNotEmpty())
             cell.notes += " / ";
         cell.notes += juce::MidiMessage::getMidiNoteName(group.midiNote, true, true, 3);
@@ -133,7 +135,6 @@ void SampleGroupSelector::setSampleGroups(
             if (cell.directionalGroup < 0)
                 cell.directionalGroup = i;
         }
-        cell.lp.setEnabled(cell.directionalGroup >= 0);
     }
     const int count = (static_cast<int>(cells.size()) + pageSize - 1) / pageSize;
     for (int i = 0; i < count; ++i)

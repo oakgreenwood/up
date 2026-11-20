@@ -7,7 +7,7 @@
 #include <cmath>
 
 // Single message-thread producer, single audio-thread consumer. No buffers or
-// ownership cross this boundary. Overflow drops new gestures, never note-offs.
+// ownership cross this boundary. Overflow drops new hits, never note-offs.
 class ShakeMidiState
 {
 public:
@@ -17,26 +17,29 @@ public:
     struct Event { juce::MidiMessage message; int position = 0; bool resetSequence = false; };
 
     // Message thread only. A new session invalidates commands for the old target.
-    void setTarget(int midiNote) noexcept
+    void setTarget(int primaryNote, int alternateNote) noexcept
     {
-        if (midiNote < 0 || midiNote > 127)
-            midiNote = -1;
+        const auto encode = [](int note) { return note >= 0 && note <= 127 ? static_cast<uint64_t>(note + 1) : 0; };
         const auto previous = target.load(std::memory_order_relaxed);
-        const uint64_t generation = ((previous >> 8) + 1) & 0xffffffffffffffULL;
-        target.store((generation << 8) | static_cast<uint64_t>(midiNote + 1), std::memory_order_release);
+        // The two low bytes hold the notes plus one, or zero if disabled.
+        const uint64_t generation = (previous >> 16) + 1;
+        const auto primary = encode(primaryNote);
+        const auto alternate = primary != 0 ? encode(alternateNote) : 0;
+        target.store((generation << 16) | (alternate << 8) | primary, std::memory_order_release);
     }
 
-    bool trigger(int velocity, bool down = false) noexcept
+    bool trigger(int velocity, bool alternate) noexcept
     {
         const auto session = target.load(std::memory_order_acquire);
-        if ((session & 0xff) == 0)
+        const int note = static_cast<int>((session >> (alternate ? 8 : 0)) & 0xff) - 1;
+        if (note < 0)
             return false;
         const auto write = writeIndex.load(std::memory_order_relaxed);
         const auto next = (write + 1) % queueSize;
         if (next == readIndex.load(std::memory_order_acquire))
             return false;
         queue[write] = { session, juce::jlimit(1, 127, velocity), getResetGeneration(),
-                         juce::Time::getMillisecondCounterHiRes(), down };
+                         juce::Time::getMillisecondCounterHiRes(), note };
         writeIndex.store(next, std::memory_order_release);
         return true;
     }
@@ -62,20 +65,21 @@ public:
         resetForPlayback();
     }
 
-    void beginBlock(int frames, bool allowTriggers, double nowMs) noexcept
+    void beginBlock(int frames, bool allowQueuedTriggers, double nowMs, bool allowInputTriggers = false) noexcept
     {
         eventCount = 0;
         if (frames <= 0)
             return;
 
+        const bool keepGates = allowQueuedTriggers || allowInputTriggers;
         for (int note = 0; note < 128; ++note)
         {
             auto& remaining = noteOffFrames[static_cast<size_t>(note)];
             if (remaining <= 0)
                 continue;
-            if (!allowTriggers || remaining <= frames)
+            if (!keepGates || remaining <= frames)
             {
-                append(juce::MidiMessage::noteOff(1, note), allowTriggers ? remaining - 1 : 0);
+                append(juce::MidiMessage::noteOff(1, note), keepGates ? remaining - 1 : 0);
                 remaining = 0;
             }
             else
@@ -91,48 +95,28 @@ public:
             const auto command = queue[read];
             read = (read + 1) % queueSize;
             const auto session = target.load(std::memory_order_acquire);
-            if (!allowTriggers || command.session != session
-                || command.reset != getResetGeneration() || (session & 0xff) == 0
+            if (!allowQueuedTriggers || command.session != session
+                || command.reset != getResetGeneration()
                 || nowMs - command.timeMs > 250.0)
                 continue;
-            const int note = static_cast<int>(session & 0xff) - 1 + (command.down ? 1 : 0);
-            if (note > 127)
-                continue;
+            const int note = command.note;
             if (firstTriggerMs < 0.0)
                 firstTriggerMs = command.timeMs;
             // Start the first queued hit immediately and preserve relative
-            // stroke timing when several moves arrived between callbacks.
+            // timing when several hits arrived between callbacks.
             const int position = static_cast<int>(std::round(juce::jlimit(0.0,
                 static_cast<double>(frames - 1), (command.timeMs - firstTriggerMs) * sampleRate * 0.001)));
-            auto& remaining = noteOffFrames[static_cast<size_t>(note)];
-            // Close an overlapping generated note before retriggering it.
-            // A previously scheduled later note-off for this note is removed.
-            for (int i = 0; i < eventCount;)
-                if (events[static_cast<size_t>(i)].message.isNoteOff()
-                    && events[static_cast<size_t>(i)].position > position
-                    && events[static_cast<size_t>(i)].message.getNoteNumber() == note)
-                {
-                    for (int j = i + 1; j < eventCount; ++j)
-                        events[static_cast<size_t>(j - 1)] = events[static_cast<size_t>(j)];
-                    --eventCount;
-                    remaining = 1;
-                }
-                else
-                    ++i;
-            if (remaining > 0)
-                append(juce::MidiMessage::noteOff(1, note), position);
-            append(juce::MidiMessage::noteOn(1, note, static_cast<juce::uint8>(command.velocity)),
-                   position, session != lastAcceptedSession);
+            addTrigger(frames, position, note, command.velocity, session != lastAcceptedSession);
             lastAcceptedSession = session;
-            if (gateFrames <= frames - position)
-            {
-                append(juce::MidiMessage::noteOff(1, note), position + gateFrames - 1);
-                remaining = 0;
-            }
-            else
-                remaining = gateFrames - (frames - position);
         }
         readIndex.store(read, std::memory_order_release);
+    }
+
+    // Audio input and queued gestures are mutually exclusive within a block.
+    // The input caller shares the same maxTriggersPerBlock event budget.
+    void addInputTrigger(int frames, int position, int note, int velocity) noexcept
+    {
+        addTrigger(frames, position, note, velocity, false);
     }
 
     int size() const noexcept { return eventCount; }
@@ -156,11 +140,41 @@ private:
         int velocity = 1;
         uint32_t reset = 0;
         double timeMs = 0.0;
-        bool down = false;
+        int note = 0;
     };
     static constexpr unsigned queueSize = 128;
     void discardQueued() noexcept
     { readIndex.store(writeIndex.load(std::memory_order_acquire), std::memory_order_release); }
+
+    void addTrigger(int frames, int position, int note, int velocity, bool resetSequence) noexcept
+    {
+        auto& remaining = noteOffFrames[static_cast<size_t>(note)];
+        // Close an overlapping generated note before retriggering it.
+        // A previously scheduled later note-off for this note is removed.
+        for (int i = 0; i < eventCount;)
+        {
+            const auto& event = events[static_cast<size_t>(i)];
+            if (event.message.isNoteOff() && event.position > position && event.message.getNoteNumber() == note)
+            {
+                for (int j = i + 1; j < eventCount; ++j)
+                    events[static_cast<size_t>(j - 1)] = events[static_cast<size_t>(j)];
+                --eventCount;
+                remaining = 1;
+            }
+            else
+                ++i;
+        }
+        if (remaining > 0)
+            append(juce::MidiMessage::noteOff(1, note), position);
+        append(juce::MidiMessage::noteOn(1, note, static_cast<juce::uint8>(velocity)), position, resetSequence);
+        if (gateFrames <= frames - position)
+        {
+            append(juce::MidiMessage::noteOff(1, note), position + gateFrames - 1);
+            remaining = 0;
+        }
+        else
+            remaining = gateFrames - (frames - position);
+    }
 
     void append(juce::MidiMessage message, int position, bool resetSequence = false) noexcept
     {

@@ -106,14 +106,23 @@ void OttProcessor::process(juce::AudioBuffer<float>& buffer, float amount) noexc
     if (channels == 0 || frames == 0)
         return;
 
-    const juce::ScopedNoDenormals noDenormals;
     const double target = sanitiseAmount(amount);
+    if (target == 0.0 && bypassBlend.getCurrentValue() == 0.0)
+        return;
+
+    const juce::ScopedNoDenormals noDenormals;
     depth.setTargetValue(target);
     bypassBlend.setTargetValue(target > 0.0 ? 1.0 : 0.0);
     auto* const* output = buffer.getArrayOfWritePointers();
 
     for (int frame = 0; frame < frames; ++frame)
     {
+        const double blend = bypassBlend.getNextValue();
+        if (target == 0.0 && blend == 0.0)
+        {
+            reset();
+            return;
+        }
         std::array<double, maxChannels> dry {};
         std::array<std::array<double, maxChannels>, bandCount> split {};
         for (int channel = 0; channel < channels; ++channel)
@@ -129,7 +138,6 @@ void OttProcessor::process(juce::AudioBuffer<float>& buffer, float amount) noexc
         }
 
         const double currentDepth = depth.getNextValue();
-        const double blend = bypassBlend.getNextValue();
         std::array<double, bandCount> gains {};
         for (size_t band = 0; band < bands.size(); ++band)
         {
@@ -152,8 +160,6 @@ void OttProcessor::process(juce::AudioBuffer<float>& buffer, float amount) noexc
 
         for (int channel = 0; channel < channels; ++channel)
         {
-            // Filters/detectors keep tracking at zero, but the output is the
-            // exact dry sample once the short bypass transition has finished.
             double result = dry[(size_t) channel];
             if (blend > 0.0)
             {

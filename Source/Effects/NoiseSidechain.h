@@ -32,12 +32,7 @@ public:
         lastRawDepth = -1.0;
         curvedDepth = 0.0;
         initialiseAmount = true;
-        levelEnvelope = 0.0;
-        pumpLevelEnvelope = pumpActivityEnvelope = 0.0;
-        pumpReleaseStartLevel = pumpReleaseStartActivity = pumpTarget = 0.0;
-        pumpReleasePhase = 1.0;
-        attackRemaining = 0;
-        hitTarget = 0.0;
+        resetEnvelopes();
         count = 0;
     }
 
@@ -74,7 +69,8 @@ public:
     void beginBlock(int start, int numSamples, int midiNote) noexcept
     {
         offset = start;
-        count = juce::jlimit(0, capacity, numSamples);
+        count = amount.isSmoothing() || amount.getCurrentValue() != 0.0f
+            ? juce::jlimit(0, capacity, numSamples) : 0;
         triggerNote = midiNote;
         std::fill_n(values.begin(), count, 0.0f);
     }
@@ -93,6 +89,9 @@ public:
 
     const float* finishBlock() noexcept
     {
+        if (count == 0)
+            return nullptr;
+
         for (int i = 0; i < count; ++i)
         {
             const double hit = values[static_cast<size_t>(i)];
@@ -139,11 +138,23 @@ public:
                     ? 1.0 - mix * envelope
                     : baseGain + (triggeredPeak - baseGain) * envelope));
         }
+        if (!amount.isSmoothing() && amount.getCurrentValue() == 0.0f)
+            resetEnvelopes();
         return values.data();
     }
 
 private:
     static constexpr double followBoostFullDepth = 0.3;
+
+    void resetEnvelopes() noexcept
+    {
+        levelEnvelope = 0.0;
+        pumpLevelEnvelope = pumpActivityEnvelope = 0.0;
+        pumpReleaseStartLevel = pumpReleaseStartActivity = pumpTarget = 0.0;
+        pumpReleasePhase = 1.0;
+        attackRemaining = 0;
+        hitTarget = 0.0;
+    }
 
     void advancePump(bool attacking) noexcept
     {

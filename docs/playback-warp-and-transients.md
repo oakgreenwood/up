@@ -28,20 +28,35 @@ interval independently of chunk boundaries. Future events are not passed to
 JUCE repeatedly; end/zero-block events are dispatched once. Unsupported messages
 longer than three bytes are filtered before constructing owning MIDI messages.
 
-SHAKE merges a bounded list of generated short note events with incoming MIDI
+Live Play merges a bounded list of generated short note events with incoming MIDI
 at dispatch time, preserving source order without copying/growing the incoming
-buffer. The first queued stroke starts at the next callback's sample zero;
-multiple queued strokes retain relative timestamps within that block. Thirty-ms
+buffer. The first queued hit starts at the next callback's sample zero;
+multiple queued hits retain relative timestamps within that block. Thirty-ms
 note-offs persist across callbacks and precede same-note retriggers. Zero blocks
 retain queued gestures and pending note-offs for the next nonempty callback.
 Only generated notes are returned to VST3/AU output after input dispatch completes.
 Bypass discards gestures and flushes pending generated note-offs on its next
 nonempty callback. See the [shake audit](realtime-audio-audit-shake-midi.md).
 
-TRACK MIDI explicitly controls SHAKE routing. Off restores the bounded local
-SPSC queue, internal voice playback, take capture and supported plugin MIDI
-output. On invalidates the local target and publishes the active virtual flag;
-audio rejects local note-ons if either this flag or the saved mode is true.
+INPUT CONTROL reads the optional mono/stereo input before clearing the output
+bus, which can share the same storage. It feeds the louder absolute channel
+sample to the [onset detector](samples-and-velocity.md#microphone-generated-hits)
+and triggers at the end of each peak window. With TRACK MIDI off, it uses the
+fixed local MIDI scheduler. With TRACK MIDI on, audio queues velocities in a
+fixed 32-hit FIFO drained by the existing editor timer. The editor sends through
+the MIDI helper and runs the same return-input check as touchpad hits. Returned
+notes supply playback and capture. Stale hits older than 250 ms are discarded.
+Mic hits replace queued gesture hits for that block and share their cap of 32
+triggers. Excess onsets are dropped while detection continues. The detector's
+30 ms minimum onset interval, quiet-time rearm and delayed retrigger check
+count audio frames across block boundaries. Detector state resets on target or route changes, bypass,
+preparation or release. The output consists of the instrument mix, and bypass
+remains silent.
+
+TRACK MIDI controls cursor shake, touchpad and microphone routing. Off uses
+internal voice playback, take capture and supported plugin MIDI output. On
+invalidates the queued gesture target and publishes the active virtual flag.
+Audio rejects queued gesture note-ons if either this flag or the saved mode is true.
 Pending previous note-offs still flush; returned MIDI alone plays/captures new
 hits. Switching off installs a new target session before clearing the runtime
 flag, so stale commands remain invalid. Existing voices/tails are not abruptly
@@ -49,8 +64,8 @@ killed. Helper IPC/device/file work stays outside plugin render in both modes.
 
 Incoming short positive-velocity note-ons update the fixed lock-free generation
 counter for their actual pitch. Generated local events never update that counter.
-Only enabled TRACK MIDI + SHAKE arms expected-note checks; the DAW recording flag
-is not read. Message snapshots the counter before sending, owns the one-second
+TRACK MIDI with active Live Play or SHAKE arms expected-note checks. Message
+snapshots the counter before sending and owns the one-second
 pending deadlines and shows the warning once per mode/target session if there
 is no matching input. Continued unanswered strokes do not postpone the warning,
 and failed helper sends still arm it. Mode off/SHAKE off, hide/close, bypass or
@@ -343,12 +358,14 @@ At an envelope of unity, all raw depths from 0.3 to 1 reach the same `B` maximum
 The boost curve keeps using raw depth, so its +15 saturation point is unchanged.
 At zero envelope, only `base` remains. The gain ceiling is bounded to approximately
 3.9811 (+12 dB); the noise renderer consumes it without a unity clamp.
-Centre is exact unity. Full Pump uses `Ap` for level-independent ducking; full
+Centre is exact unity and skips envelope processing once the amount ramp settles.
+Full Pump uses `Ap` for level-independent ducking; full
 Follow has no unmodulated floor. Amount changes still ramp over 10 ms. Trigger
 selection changes preserve envelope continuity and filter future arriving hits.
 After preparation/bypass, the first amount is seeded directly from the parameter,
-so restored full Follow starts silent. Detection continues while base noise gain
-is off. Modulation never resets the noise loop/playhead.
+so restored full Follow starts silent. At nonzero depth, detection continues
+while base noise gain is off. Returning to centre clears the modulation
+envelopes. The noise loop and playhead follow the noise gain and trim controls.
 
 Capture and modulation reuse a fixed 512-float array; voices use fixed 128-frame
 hit scratch plus the prepared latency ring. Parameters are snapshotted once per
@@ -419,8 +436,8 @@ frame; the former 16-frame target/interpolation stage allowed stale upward gain
 to amplify new transients. The power envelope and depth ramp smooth gain without
 that extra delay. Entering/leaving zero also crossfades
 the crossover path over 20 ms to avoid an abrupt phase switch. Once at zero,
-finite dry samples pass through exactly; filters/detectors continue tracking so
-re-enabling does not restart from stale state. Active crossovers rotate phase;
+dry samples pass through exactly. The crossover and detectors reset after the
+fade to zero and stay idle until the amount rises again. Active crossovers rotate phase;
 the brief bypass transition can therefore affect magnitude.
 
 Filters allocate their two-channel state only during preparation. Rendering
@@ -536,7 +553,8 @@ their current settings with cleared histories.
 Preparation clears histories and updates the rate; denormal protection is
 provided by the processor. Finite checks prevent invalid input/history or an
 out-of-float-range result from poisoning recursive state. A settled flat EQ
-with cleared history is unity and becomes an exact bypass. Frequency-only edits
+with cleared history is unity and becomes an exact bypass. If all four bands
+are idle, the voice skips the EQ stage. Frequency-only edits
 at 0 dB neither calculate coefficients nor run the band. A band returning to
 0 dB continues until its prior IIR state is below a fixed negligible threshold,
 then clears that state and bypasses. No processing latency is added.
@@ -783,18 +801,28 @@ add any saved state, latency or tail memory. Finite output checks follow boostin
 ### Latency And Voice Lifetime
 
 With `Pmax = ceil(sampleRate / 60)`, the PSOLA core delays by `4 * Pmax + 1`
-frames and its following coloration by 512 frames, including at zero. Total
-host-reported latency is `512 + 4 * Pmax + 1`: 3713 frames (77.35 ms) at 48 kHz,
-or 3453 frames (78.30 ms) at 44.1 kHz. Removing the separate LPC option removes
-512 frames from the previous total. Live monitoring still incurs this delay.
+frames and its following coloration by 512 frames. When every pad has neutral
+Formant, both stages bypass completely and the instance reports zero latency.
+When any pad uses Formant, the instrument runs at `512 + 4 * Pmax + 1` frames:
+3713 (77.35 ms) at 48 kHz or 3453 (78.30 ms) at 44.1 kHz. Neutral voices in
+this mode have a matching dry delay to align with shifted voices. Noise trigger
+alignment and the directional choke use the same latency as their voice.
+
+Latency mode is chosen during preparation and can change at the start of a
+block once all existing voices and their tails have finished. With the DSP
+enabled, the Formant value continues to ramp during a note. When a nonzero
+value is set from zero-latency operation, Formant becomes audible when the
+instance can enter its delayed mode. The processor's message-thread timer
+reports runtime latency changes to the host, including with the editor closed.
 
 The core drains its latency plus `3 * Pmax + 2` frames; coloration adds 1024 drain
 frames, for 6627 total at 48 kHz. Source exhaustion/ADSR completion starts this
 zero-input drain before releasing the voice/cache lease. Hard stops and stealing
 discard pending output; new notes reset both stages. Preparation stops voices
 before preparing sample-rate-dependent storage/tables. `getTailLengthSeconds`
-reports the combined drain plus the sample EQ allowance. Silent float bypass clears existing output storage
-for this no-input instrument, avoiding JUCE's default nonzero-latency assertion.
+reports the active Formant drain plus the sample EQ and OTT allowances. A dry
+voice can finish as soon as its source and any EQ tail end. Silent float bypass
+clears the output bus.
 
 Voice scratch remains fixed stereo/128 frames and handles variable/tiny/zero
 blocks. PSOLA rings allocate only at construction/preparation; coloration uses

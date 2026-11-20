@@ -16,6 +16,9 @@
 #include "Midi/VirtualMidiClient.h"
 
 class CustomLookAndFeel;
+#if JUCE_MAC
+class TrackpadPlayView;
+#endif
 
 enum class ValueDragAxis { undecided, vertical, horizontal };
 
@@ -262,6 +265,8 @@ private:
     void watchShakeMidiInput(int note);
     void checkShakeMidiInput();
     void handleShakeMouseMove(const juce::MouseEvent&);
+    void handleTouchpadHit(int velocity, std::optional<juce::Point<float>> touch, double pressedMs);
+    bool triggerLiveHit(int velocity, bool alternate);
     void startRecordedMidiDrag();
     void insertRecordedMidi();
     void openNoiseFileChooser();
@@ -292,6 +297,7 @@ private:
         }
     } shakeButton;
     juce::TextButton trackMidiButton { "TRACK MIDI" };
+    juce::TextButton inputControlButton { "INPUT CONTROL" };
     VirtualMidiClient virtualMidi;
     struct MidiDragButton final : juce::TextButton
     {
@@ -320,14 +326,22 @@ private:
         void mouseDown(const juce::MouseEvent& event) override
         {
             owner.shakeGesture.rebase();
-            if (!owner.shakeAreaOpen || owner.shakeAreaSurface == nullptr)
+            if (owner.livePlayGroup < 0 || owner.livePlaySurface == nullptr)
                 return;
             const auto position = event.getEventRelativeTo(&owner).position;
-            if (!owner.shakeAreaSurface->getBounds().toFloat().contains(position))
-                owner.setShakeAreaVisible(false);
+            if (!owner.livePlaySurface->getBounds().toFloat().contains(position))
+                owner.setLivePlayGroup(-1);
             else if (event.mods.isLeftButtonDown()
-                     && !owner.trackMidiButton.getBounds().toFloat().contains(position))
+                     && !owner.trackMidiButton.getBounds().toFloat().contains(position)
+                     && !owner.isInputControlOpen()
+                     && (!owner.inputControlButton.isVisible()
+                         || !owner.inputControlButton.getBounds().toFloat().contains(position)))
             {
+                if (owner.isTouchpadPlayOpen())
+                {
+                    owner.handleTouchpadHit(100, std::nullopt, juce::Time::getMillisecondCounterHiRes());
+                    return;
+                }
                 owner.shakeButton.setToggleState(!owner.shakeButton.getToggleState(),
                                                  juce::dontSendNotification);
                 owner.shakeGesture.reset();
@@ -339,18 +353,21 @@ private:
         {
             const auto position = event.getEventRelativeTo(&owner).position;
             if (!owner.getLocalBounds().toFloat().contains(position)
-                || (owner.shakeAreaOpen && owner.shakeAreaSurface != nullptr
-                    && !owner.shakeAreaSurface->getBounds().toFloat().contains(position)))
+                || (owner.livePlayGroup >= 0 && owner.livePlaySurface != nullptr
+                    && !owner.livePlaySurface->getBounds().toFloat().contains(position)))
                 owner.shakeGesture.rebase();
         }
         AudioPluginAudioProcessorEditor& owner;
     } shakeMouseListener { *this };
     ShakeGesture shakeGesture;
     uint32_t observedShakeResetGeneration = 0;
-    int shakeTargetGroup = -1;
-    int shakeVirtualInput = -1;
+    int liveMidiGroup = -1;
+    int liveMidiInput = -1;
+    std::array<int, 2> liveMidiNotes { -1, -1 };
     bool virtualMidiWasReady = false;
-    bool shakeListening = false;
+    bool liveMidiListening = false;
+    bool liveMidiUsesInputControl = false;
+    double nextTouchpadHitMs = 0.0;
     struct ShakeMidiInputCheck
     {
         uint32_t generation = 0;
@@ -360,9 +377,12 @@ private:
     bool shakeMidiInputMonitoring = false;
     bool shakeMidiInputWarningShown = false;
     SampleGroupSelector sampleGrid;
-    bool shakeAreaOpen = false;
-    std::unique_ptr<juce::Component> shakeAreaSurface, shakeAreaCloseButton;
-    juce::Label shakeAreaInstruction;
+    int livePlayGroup = -1;
+    std::unique_ptr<juce::Component> livePlaySurface, livePlayCloseButton;
+#if JUCE_MAC
+    std::unique_ptr<TrackpadPlayView> trackpadPlayView;
+#endif
+    juce::Label livePlayInstruction;
     struct ShakeStartButton final : juce::TextButton
     {
         ShakeStartButton() : juce::TextButton("CLICK TO START") {}
@@ -373,7 +393,10 @@ private:
             g.drawText(getButtonText(), getLocalBounds(), juce::Justification::centred);
         }
     } shakeAreaStartButton;
-    void setShakeAreaVisible(bool visible);
+    void setLivePlayGroup(int group);
+    bool isNonDirectionalLivePlayOpen() const noexcept;
+    bool isInputControlOpen() const noexcept;
+    bool isTouchpadPlayOpen() const noexcept;
     void updateMainPanelVisibility();
     void selectSampleGroupForEditing(int groupIndex);
     SampleEqualiserEditor equaliserEditor;

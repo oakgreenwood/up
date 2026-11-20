@@ -11,21 +11,28 @@ APVTS parameters are serialized with `parameters.copyState()` and restored with
 `parameters.replaceState(...)`.
 
 `virtualMidiInput` is an instance-level root property, not a host parameter:
-0 = TRACK MIDI off/internal SHAKE (default for new and older missing states),
+0 = TRACK MIDI off/internal live playback (default for new and older missing states),
 1 = TRACK MIDI on/ULICHPERC MIDI. Previous positive numbered routes normalize to
 1. The visible toggle uses the existing setter and nonparameter state-change
 notification; save/restore continue using the same scalar property and APVTS
-snapshot/replace. No parameter indices or schema change. Ordinary group changes
-hide the toggle but retain its preference. SHAKE enablement itself is unsaved.
+snapshot/replace. No parameter indices or schema change. The toggle appears
+in the Live Play area and for directional groups in the sample editor.
 
 `shakeVirtualMidiActive` is a lock-free runtime boolean published by message
-when an enabled SHAKE session is in TRACK MIDI mode, and cleared on teardown.
+when an active shake or touchpad session is in TRACK MIDI mode, and cleared on teardown.
 Local target/session changes precede its release store; audio acquire-loads it.
 The render policy also reads the saved atomic mode, so selecting TRACK MIDI
 suppresses queued local note-ons before the editor's target update. Switching
 off publishes a new valid local target/session before releasing the active flag,
 invalidating obsolete commands. Audio performs no state snapshot or host
 notification. Incoming MIDI remains unaffected in either mode.
+
+INPUT CONTROL is an editor-session switch. The editor publishes its active
+primary note, TRACK MIDI route and target generation in one lock-free atomic.
+The audio thread reads that target once per block and owns the onset detector.
+Onsets routed through TRACK MIDI carry the target and audio lifecycle generations
+so the editor can discard hits queued before a mode change, bypass or device
+restart. INPUT CONTROL adds no state property or host parameter.
 
 `hostRecording` remains native transport metadata for existing behavior. Neither
 TRACK MIDI routing nor its missing-input alert depends on it. The prototype
@@ -246,13 +253,13 @@ and renaming are no-ops; selecting this program does not reset parameter values.
 
 ## Sample-Specific State
 
-SHAKE mode, direction detection, queued gestures, short generated note gates,
+Live Play mode, direction detection, queued hits, short generated note gates,
 transport-reset generations and the current captured MIDI take are runtime-only.
 No host parameter or saved state is added for the controls; opening a new editor
 starts SHAKE off, but the current nonempty take remains available to DRAG MIDI
 in that processor instance. Take generations, prefix metadata and note-end
 atomics are not serialized to the APVTS tree. All generated
-velocity/direction variants read the selected group's existing effects cache.
+notes read their mapped pitch group's existing effects cache.
 The cache also retains an immutable original Arrangement beat position for each
 take. It is pinned/copied with the same snapshot as the note data, stays
 runtime-only, and is not moved by later playback/seek or cursor changes.
@@ -390,7 +397,10 @@ LPC values are not reinterpreted as PSOLA values. Missing PSOLA values default t
 zero. Selection, editor-closed automation, state and Apply to All now use the
 registry: Gain, Punch, Pitch, Formant, Mono, Panorama and the eight EQ parameters.
 
-Formant 0 retains natural varispeed formants. The surviving PSOLA version keeps
+Formant 0 retains natural varispeed formants. The realtime cache publishes a
+revision when a pad crosses neutral, or when the cache is reset. Render checks
+all groups when that revision changes and adopts the instance latency when
+voices are idle. The effect bypass adds no saved state. The PSOLA stage keeps
 its existing post-processing: LPC envelope EQ at 95% of the original correction
 in dB, followed by asymmetric saturation with a 0..24.84% blend tied to absolute
 knob offset. This coloration remains active at nonzero Formant even when pitch
