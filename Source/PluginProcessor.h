@@ -100,6 +100,16 @@ public:
     void setLivePlayNotes(int primaryNote, int alternateNote = -1) noexcept
     { shakeMidi.setTarget(primaryNote, alternateNote); }
     void setInputControlTarget(int note, bool trackMidi = false) noexcept;
+    struct InputControlMidiTarget
+    {
+        uint64_t session = 0;
+        uint32_t reset = 0;
+        int note = -1;
+
+        bool operator==(const InputControlMidiTarget& other) const noexcept
+        { return session == other.session && reset == other.reset; }
+    };
+    InputControlMidiTarget getInputControlMidiTarget() const noexcept;
 #if JUCE_DEBUG
     struct InputControlTraceEvent
     {
@@ -120,19 +130,26 @@ public:
         return inputControlTraceDropped.exchange(0, std::memory_order_relaxed);
     }
 #endif
+    // The MIDI worker is the only consumer. A disabled target drains stale hits.
     template <typename Callback>
-    void forEachInputControlVelocity(Callback&& callback)
+    void forEachInputControlVelocity(const InputControlMidiTarget& target, Callback&& callback)
     {
-        const auto read = inputControlFifo.read(static_cast<int>(inputControlHits.size()));
-        const auto target = inputControlTarget.load(std::memory_order_relaxed);
-        const auto reset = inputControlResetGeneration.load(std::memory_order_relaxed);
         const auto nowMs = juce::Time::getMillisecondCounterHiRes();
-        read.forEach([&] (int index)
+        for (int i = 0; i < ShakeMidiState::maxTriggersPerBlock; ++i)
         {
-            const auto& hit = inputControlHits[static_cast<size_t>(index)];
-            if (hit.target == target && hit.reset == reset && nowMs - hit.timeMs <= 250.0)
+            int index, count, wrappedIndex, wrappedCount;
+            inputControlFifo.prepareToRead(1, index, count, wrappedIndex, wrappedCount);
+            // A fresh session can reach the queue while the worker is polling
+            // the previous connection. Leave those entries for its next pass.
+            if (count == 0 || !(target == getInputControlMidiTarget()))
+                break;
+
+            const auto hit = inputControlHits[static_cast<size_t>(index)];
+            inputControlFifo.finishedRead(1);
+            if (target.note >= 0 && hit.target == target.session && hit.reset == target.reset
+                && nowMs - hit.timeMs <= 250.0)
                 callback(hit.velocity);
-        });
+        }
     }
     bool triggerLivePlay(int velocity, bool alternate) noexcept { return shakeMidi.trigger(velocity, alternate); }
     uint32_t getShakeResetGeneration() const noexcept { return shakeMidi.getResetGeneration(); }

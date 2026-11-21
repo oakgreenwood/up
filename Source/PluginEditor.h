@@ -11,6 +11,7 @@
 #include "UI/SampleGroupSelector.h"
 #include "UI/SampleWaveformEditor.h"
 #include "UI/NoiseWaveformEditor.h"
+#include "UI/OnboardingModal.h"
 #include "UI/ShakeGesture.h"
 #include "UI/AbletonMidiBridgeClient.h"
 #include "Midi/VirtualMidiClient.h"
@@ -264,6 +265,7 @@ private:
     void resetShakeMidiInputCheck() noexcept;
     void watchShakeMidiInput(int note);
     void checkShakeMidiInput();
+    void showShakeMidiInputWarning();
     void handleShakeMouseMove(const juce::MouseEvent&);
     void handleTouchpadHit(int velocity, std::optional<juce::Point<float>> touch, double pressedMs);
     bool triggerLiveHit(int velocity, bool alternate);
@@ -297,8 +299,46 @@ private:
         }
     } shakeButton;
     juce::TextButton trackMidiButton { "TRACK MIDI" };
-    juce::TextButton inputControlButton { "INPUT CONTROL" };
+    juce::TextButton inputControlButton { "AUDIO TRIGGER" };
+    juce::TextButton inputRoutingButton { "Input routing" };
+    PluginUI::OnboardingModal onboardingModal;
     VirtualMidiClient virtualMidi;
+    struct ShakeMidiInputCheck
+    {
+        void watch(uint32_t inputGeneration, double nowMs) noexcept
+        {
+            // A newer stroke must not postpone an unanswered check.
+            if (deadlineMs <= 0.0 || inputGeneration != generation)
+                *this = { inputGeneration, nowMs + 1000.0 };
+        }
+
+        bool timedOut(uint32_t inputGeneration, double nowMs) noexcept
+        {
+            if (inputGeneration != generation)
+                deadlineMs = 0.0;
+            return deadlineMs > 0.0 && nowMs >= deadlineMs;
+        }
+
+        uint32_t generation = 0;
+        double deadlineMs = 0.0;
+    };
+    class InputControlMidiWorker final : private juce::Thread
+    {
+    public:
+        explicit InputControlMidiWorker(AudioPluginAudioProcessor&);
+        ~InputControlMidiWorker() override;
+        void setActive(bool);
+        struct Notices { bool launchHelper; bool missingInput; };
+        Notices takeNotices();
+
+    private:
+        void run() override;
+
+        AudioPluginAudioProcessor& processor;
+        std::atomic<bool> active { false };
+        juce::CriticalSection noticeLock;
+        AudioPluginAudioProcessor::InputControlMidiTarget launchTarget, warningTarget;
+    } inputControlMidi;
     struct MidiDragButton final : juce::TextButton
     {
         MidiDragButton() : juce::TextButton("DRAG MIDI") {}
@@ -325,6 +365,8 @@ private:
         void mouseMove(const juce::MouseEvent& event) override { owner.handleShakeMouseMove(event); }
         void mouseDown(const juce::MouseEvent& event) override
         {
+            if (event.eventComponent == &owner.onboardingModal)
+                return;
             owner.shakeGesture.rebase();
             if (owner.livePlayGroup < 0 || owner.livePlaySurface == nullptr)
                 return;
@@ -368,11 +410,6 @@ private:
     bool liveMidiListening = false;
     bool liveMidiUsesInputControl = false;
     double nextTouchpadHitMs = 0.0;
-    struct ShakeMidiInputCheck
-    {
-        uint32_t generation = 0;
-        double deadlineMs = 0.0;
-    };
     std::array<ShakeMidiInputCheck, 128> shakeMidiInputChecks {};
     bool shakeMidiInputMonitoring = false;
     bool shakeMidiInputWarningShown = false;

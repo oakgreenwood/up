@@ -3,8 +3,8 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${PROJECT_DIR}/build"
-SOURCE_VST="${BUILD_DIR}/ulichperc_artefacts/Debug/VST3/ulichpercsnewnew.vst3"
-SOURCE_AU="${BUILD_DIR}/ulichperc_artefacts/Debug/AU/ulichpercsnewnew.component"
+SOURCE_VST="${BUILD_DIR}/ulichperc_artefacts/Debug/VST3/Street Percussion.vst3"
+SOURCE_AU="${BUILD_DIR}/ulichperc_artefacts/Debug/AU/Street Percussion.component"
 INSTALL_DIR="/Library/Audio/Plug-Ins/VST3"
 DEST_VST="${INSTALL_DIR}/$(basename "${SOURCE_VST}")"
 

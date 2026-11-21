@@ -38,18 +38,21 @@ Only generated notes are returned to VST3/AU output after input dispatch complet
 Bypass discards gestures and flushes pending generated note-offs on its next
 nonempty callback. See the [shake audit](realtime-audio-audit-shake-midi.md).
 
-INPUT CONTROL reads the optional mono/stereo input before clearing the output
+AUDIO TRIGGER reads the optional mono/stereo input before clearing the output
 bus, which can share the same storage. It feeds the louder absolute channel
 sample to the [onset detector](samples-and-velocity.md#microphone-generated-hits)
 and triggers at the end of each peak window. With TRACK MIDI off, it uses the
 fixed local MIDI scheduler. With TRACK MIDI on, audio queues velocities in a
-fixed 32-hit FIFO drained by the existing editor timer. The editor sends through
-the MIDI helper and runs the same return-input check as touchpad hits. Returned
+fixed 32-hit FIFO. An editor-owned worker drains it on a 2 ms polling interval
+while active and checks its helper connection every 16 ms. It sleeps when
+inactive. The worker sends through the MIDI helper and snapshots the return
+note counter before sending. The editor handles helper launches and displays
+timeout warnings. Returned
 notes supply playback and capture. Stale hits older than 250 ms are discarded.
 Mic hits replace queued gesture hits for that block and share their cap of 32
 triggers. Excess onsets are dropped while detection continues. The detector's
-30 ms minimum onset interval, quiet-time rearm and delayed retrigger check
-count audio frames across block boundaries. Detector state resets on target or route changes, bypass,
+60 ms minimum onset interval, quiet-time rearm, attack envelopes and delayed
+retrigger check carry across block boundaries. Detector state resets on target or route changes, bypass,
 preparation or release. The output consists of the instrument mix, and bypass
 remains silent.
 
@@ -64,9 +67,9 @@ killed. Helper IPC/device/file work stays outside plugin render in both modes.
 
 Incoming short positive-velocity note-ons update the fixed lock-free generation
 counter for their actual pitch. Generated local events never update that counter.
-TRACK MIDI with active Live Play or SHAKE arms expected-note checks. Message
-snapshots the counter before sending and owns the one-second
-pending deadlines and shows the warning once per mode/target session if there
+TRACK MIDI with active Live Play or SHAKE arms expected-note checks. The sender
+snapshots the counter before sending and tracks the one-second pending deadline.
+The editor shows the warning once per mode/target session if there
 is no matching input. Continued unanswered strokes do not postpone the warning,
 and failed helper sends still arm it. Mode off/SHAKE off, hide/close, bypass or
 target change cancels pending state. Transport start/stop alone does not.

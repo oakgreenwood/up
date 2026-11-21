@@ -27,12 +27,12 @@ off publishes a new valid local target/session before releasing the active flag,
 invalidating obsolete commands. Audio performs no state snapshot or host
 notification. Incoming MIDI remains unaffected in either mode.
 
-INPUT CONTROL is an editor-session switch. The editor publishes its active
+AUDIO TRIGGER is an editor-session switch. The editor publishes its active
 primary note, TRACK MIDI route and target generation in one lock-free atomic.
 The audio thread reads that target once per block and owns the onset detector.
 Onsets routed through TRACK MIDI carry the target and audio lifecycle generations
-so the editor can discard hits queued before a mode change, bypass or device
-restart. INPUT CONTROL adds no state property or host parameter.
+so the MIDI worker can discard hits queued before a mode change, bypass or
+device restart. AUDIO TRIGGER adds no state property or host parameter.
 
 `hostRecording` remains native transport metadata for existing behavior. Neither
 TRACK MIDI routing nor its missing-input alert depends on it. The prototype
@@ -52,10 +52,10 @@ transport/take metadata; no companion installation is required for it.
 
 `incomingNoteOnGenerations` contains 128 processor-owned lock-free uint32
 counters, explicitly initialized during construction. Audio increments only
-on incoming positive-velocity note-ons, not generated SHAKE messages; message
-reads to check pending virtual strokes. They are never serialized/reset during
-playback/lifecycle and own no MIDI objects. The editor owns the fixed pending
-note/deadline table and once-per-session alert flag. No new host parameter or
+on incoming positive-velocity note-ons, not generated SHAKE messages. Each
+sender reads them to check pending virtual strokes. They are never serialized
+or reset during playback and own no MIDI objects. The editor owns the gesture
+checks and presents warnings from the microphone worker. No new host parameter or
 state property is introduced. See [SHAKE input check](ui.md#cursor-shake-mode).
 
 The appended integer `abletonLink` parameter (displayed as `ULICH Link`,

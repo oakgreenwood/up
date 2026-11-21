@@ -41,8 +41,9 @@ when behavior changes.
   microphone-driven Live Play.
 - `Source/Midi/ShakeMidiTake.h`: fixed-slot live sample-MIDI take cache,
   transport/idle boundaries and message-thread MIDI-file export.
-- `Source/Midi/VirtualMidiClient.*` and `VirtualMidiProtocol.h`: editor-only
-  virtual MIDI routing, local discovery/lease/stroke messages and shared protocol.
+- `Source/Midi/VirtualMidiClient.*` and `VirtualMidiProtocol.h`: virtual MIDI
+  routing for the editor's gesture client and microphone worker, with local
+  discovery, lease and stroke messages.
 - `integrations/virtual-midi/`: separate system MIDI helper, per-user installation
   and cross-DAW setup; macOS CoreMIDI and Windows 11 MIDI Services.
 - `Source/UI/ShakeGesture.h`: message-thread cursor speed and reversal detection.

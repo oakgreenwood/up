@@ -1,7 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "Parameters/PluginParameters.h"
+#include "UI/BinaryImageLoader.h"
 #include "UI/CustomLookAndFeel.h"
+#include "UI/InputRoutingGuide.h"
 #if JUCE_MAC
 #include "UI/TrackpadPlayView.h"
 #if JUCE_DEBUG
@@ -10,6 +12,7 @@
 #endif
 
 #include <cmath>
+#include <utility>
 
 
 namespace
@@ -647,6 +650,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     : AudioProcessorEditor (&p),
       processorRef (p),
       abletonMidiInsertSupported(supportsAbletonMidiInsertion()),
+      inputControlMidi(p),
       equaliserEditor(p),
       sampleWaveformEditor(p),
       noiseWaveform(p)
@@ -826,12 +830,22 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     };
     configureSampleTab(inputControlButton);
     inputControlButton.setClickingTogglesState(true);
-    inputControlButton.setTooltip("Switch between touchpad and microphone triggers. "
-                                  "Route the microphone to the plug-in sidechain or select it as the standalone audio input.");
+    inputControlButton.setTooltip("Trigger hits from a microphone or routed audio. Click Input routing for setup.");
     inputControlButton.onClick = [this]
     {
         updateShakeMode();
         repaint();
+    };
+    configureSampleTab(inputRoutingButton);
+    inputRoutingButton.setTooltip("Show input routing for this host");
+    addChildComponent(onboardingModal);
+    inputRoutingButton.onClick = [this]
+    {
+        const auto guide = getInputRoutingGuide(juce::PluginHostType{}, processorRef.wrapperType,
+                                                processorRef.getName());
+        const auto screenshot = guide.imageResource != nullptr
+            ? PluginUI::BinaryImageLoader::load(guide.imageResource) : juce::Image{};
+        onboardingModal.show(guide.title, guide.steps, screenshot);
     };
     configureSampleTab(midiDragButton);
     configureSampleTab(midiInsertButton);
@@ -1220,6 +1234,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
     processorRef.setInputControlTarget(-1);
+    inputControlMidi.setActive(false);
 #if JUCE_MAC
     trackpadPlayView.reset();
 #endif
@@ -1228,6 +1243,7 @@ AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
     removeMouseListener(&shakeMouseListener);
     shakeButton.onClick = {};
     trackMidiButton.onClick = {};
+    inputRoutingButton.onClick = {};
     virtualMidi.release();
     midiDragButton.onDrag = {};
     midiInsertButton.onClick = {};
@@ -1511,6 +1527,7 @@ void AudioPluginAudioProcessorEditor::setLivePlayGroup(int group)
     {
         trackMidiButton.toFront(false);
         inputControlButton.toFront(false);
+        inputRoutingButton.toFront(false);
     }
     updateMainPanelVisibility();
     resized();
@@ -1635,6 +1652,9 @@ void AudioPluginAudioProcessorEditor::openNoiseFileChooser()
 
 bool AudioPluginAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files)
 {
+    if (onboardingModal.isVisible())
+        return false;
+
     for (const auto& path : files)
         if (BackgroundNoisePlayer::canImportFile(juce::File(path)))
             return true;
@@ -1776,16 +1796,114 @@ void AudioPluginAudioProcessorEditor::resetShakeMidiInputCheck() noexcept
     shakeMidiInputWarningShown = false;
 }
 
+AudioPluginAudioProcessorEditor::InputControlMidiWorker::InputControlMidiWorker(AudioPluginAudioProcessor& p)
+    : juce::Thread("ULICHPERC microphone MIDI"), processor(p)
+{
+}
+
+AudioPluginAudioProcessorEditor::InputControlMidiWorker::~InputControlMidiWorker()
+{
+    // Join after waking the worker so its client releases the helper lease.
+    stopThread(-1);
+}
+
+void AudioPluginAudioProcessorEditor::InputControlMidiWorker::setActive(bool shouldRun)
+{
+    if (active.load(std::memory_order_relaxed) != shouldRun)
+    {
+        active.store(shouldRun, std::memory_order_release);
+        notify();
+    }
+    if (shouldRun && !isThreadRunning())
+        startThread();
+}
+
+AudioPluginAudioProcessorEditor::InputControlMidiWorker::Notices
+AudioPluginAudioProcessorEditor::InputControlMidiWorker::takeNotices()
+{
+    const auto target = processor.getInputControlMidiTarget();
+    const juce::ScopedLock lock(noticeLock);
+    const auto launch = std::exchange(launchTarget, {});
+    const auto warning = std::exchange(warningTarget, {});
+    return { target.note >= 0 && target == launch, target.note >= 0 && target == warning };
+}
+
+void AudioPluginAudioProcessorEditor::InputControlMidiWorker::run()
+{
+    constexpr int hitPollMs = 2;
+    constexpr int connectionPollMs = 16;
+    VirtualMidiClient client;
+    AudioPluginAudioProcessor::InputControlMidiTarget previousTarget;
+    double nextConnectionPollMs = 0.0;
+    ShakeMidiInputCheck check;
+    bool warned = false;
+
+    while (!threadShouldExit())
+    {
+        const bool shouldRun = active.load(std::memory_order_acquire);
+        const auto target = shouldRun ? processor.getInputControlMidiTarget()
+                                      : AudioPluginAudioProcessor::InputControlMidiTarget {};
+        if (!(target == previousTarget))
+        {
+            if (target.session != previousTarget.session)
+            {
+                client.release();
+                nextConnectionPollMs = 0.0;
+            }
+            previousTarget = target;
+            check = {};
+            warned = false;
+            const juce::ScopedLock lock(noticeLock);
+            launchTarget = {};
+            warningTarget = {};
+        }
+
+        if (target.note < 0)
+        {
+            processor.forEachInputControlVelocity(target, [] (int) {});
+            wait(shouldRun ? connectionPollMs : -1);
+            continue;
+        }
+
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        if (nowMs >= nextConnectionPollMs)
+        {
+            client.poll(1, true, false);
+            nextConnectionPollMs = nowMs + connectionPollMs;
+            // Process launch can call platform UI APIs. Leave it to the
+            // editor so a worker join never waits on that message thread.
+            if (client.takeHelperLaunchRequest())
+            {
+                const juce::ScopedLock lock(noticeLock);
+                launchTarget = target;
+            }
+        }
+        processor.forEachInputControlVelocity(target, [&] (int velocity)
+        {
+            if (!active.load(std::memory_order_acquire) || threadShouldExit()
+                || !(target == processor.getInputControlMidiTarget()))
+                return;
+            if (!warned)
+                check.watch(processor.getIncomingNoteOnGeneration(target.note), nowMs);
+            client.trigger(target.note, velocity);
+        });
+        if (check.deadlineMs > 0.0 && check.timedOut(processor.getIncomingNoteOnGeneration(target.note), nowMs))
+        {
+            check = {};
+            warned = true;
+            const juce::ScopedLock lock(noticeLock);
+            warningTarget = target;
+        }
+        wait(hitPollMs);
+    }
+}
+
 void AudioPluginAudioProcessorEditor::watchShakeMidiInput(int note)
 {
     if (!shakeMidiInputMonitoring || shakeMidiInputWarningShown || note < 0 || note > 127)
         return;
     auto& check = shakeMidiInputChecks[static_cast<size_t>(note)];
-    const auto generation = processorRef.getIncomingNoteOnGeneration(note);
-    // Keep the first unanswered stroke's deadline; continuous shaking must
-    // not postpone a missing-input warning indefinitely.
-    if (check.deadlineMs <= 0.0 || generation != check.generation)
-        check = { generation, juce::Time::getMillisecondCounterHiRes() + 1000.0 };
+    check.watch(processorRef.getIncomingNoteOnGeneration(note), juce::Time::getMillisecondCounterHiRes());
 }
 
 void AudioPluginAudioProcessorEditor::checkShakeMidiInput()
@@ -1798,16 +1916,19 @@ void AudioPluginAudioProcessorEditor::checkShakeMidiInput()
         auto& check = shakeMidiInputChecks[note];
         if (check.deadlineMs <= 0.0)
             continue;
-        if (processorRef.getIncomingNoteOnGeneration(static_cast<int>(note)) != check.generation)
-            check.deadlineMs = 0.0;
-        else if (now >= check.deadlineMs)
+        if (check.timedOut(processorRef.getIncomingNoteOnGeneration(static_cast<int>(note)), now))
         {
-            shakeMidiInputWarningShown = true;
-            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                "SHAKE MIDI input", "Enable ULICHPERC MIDI in your DAW settings.");
+            showShakeMidiInputWarning();
             return;
         }
     }
+}
+
+void AudioPluginAudioProcessorEditor::showShakeMidiInputWarning()
+{
+    shakeMidiInputWarningShown = true;
+    juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+        "SHAKE MIDI input", "Enable ULICHPERC MIDI in your DAW settings.");
 }
 
 void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
@@ -1834,6 +1955,9 @@ void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
         ? (trackMidi ? "TRACK MIDI: ON" : "TRACK MIDI: OFF") : "TRACK MIDI");
     trackMidiButton.setToggleState(trackMidi, juce::dontSendNotification);
     inputControlButton.setVisible(nonDirectional);
+    inputRoutingButton.setVisible(inputControl);
+    if (!inputControl)
+        onboardingModal.setVisible(false);
 #if JUCE_MAC
     if (trackpadPlayView != nullptr)
         trackpadPlayView->setVisible(touchpad);
@@ -1881,10 +2005,12 @@ void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
             processorRef.requestShakeSequenceReset();
         observedShakeResetGeneration = processorRef.getShakeResetGeneration();
     }
-    // Device discovery/acknowledgements are timer work, never work before
-    // estimating velocity in a mouse-move callback.
+    const bool monitorInput = listening && trackMidi;
+    inputControlMidi.setActive(monitorInput && inputControl);
+    // Gesture discovery stays on the editor timer. The mic worker owns its
+    // connection and drains queued hits independently of the UI refresh.
     if (pollMidi)
-        virtualMidi.poll(1, listening && trackMidi);
+        virtualMidi.poll(1, monitorInput && !inputControl);
     const bool ready = trackMidi && virtualMidi.isReady();
 
     if (ready != virtualMidiWasReady)
@@ -1894,20 +2020,22 @@ void AudioPluginAudioProcessorEditor::updateShakeMode(bool pollMidi)
         if (ready)
             processorRef.requestShakeSequenceReset();
     }
-    const bool monitorInput = listening && trackMidi;
     if (monitorInput != shakeMidiInputMonitoring)
     {
         resetShakeMidiInputCheck();
         shakeMidiInputMonitoring = monitorInput;
     }
-    if (pollMidi)
+    if (pollMidi && monitorInput)
     {
-        processorRef.forEachInputControlVelocity([&] (int velocity)
+        if (inputControl)
         {
-            if (inputControl && monitorInput && !processorRef.isPlaybackBypassed())
-                triggerLiveHit(velocity, false);
-        });
-        if (monitorInput)
+            const auto notices = inputControlMidi.takeNotices();
+            if (notices.launchHelper)
+                VirtualMidi::helperFile().startAsProcess();
+            if (notices.missingInput)
+                showShakeMidiInputWarning();
+        }
+        else
             checkShakeMidiInput();
     }
     shakeButton.setTooltip(trackMidi ? VirtualMidi::portName()
@@ -2100,6 +2228,8 @@ void AudioPluginAudioProcessorEditor::paint (juce::Graphics& g)
 
 void AudioPluginAudioProcessorEditor::resized()
 {
+    onboardingModal.setBounds(getLocalBounds());
+
     constexpr int knobSize = 47;
     constexpr int labelWidth = 96;
     constexpr int labelHeight = 22;
@@ -2204,8 +2334,11 @@ void AudioPluginAudioProcessorEditor::resized()
             livePlayCloseButton->setBounds(area.getRight() - 26, area.getY() - 32, 26, 26);
         if (nonDirectional)
         {
-            trackMidiButton.setBounds(area.getCentreX() - 144, area.getBottom() - 48, 128, 30);
-            inputControlButton.setBounds(area.getCentreX() - 8, area.getBottom() - 48, 152, 30);
+            const int controlsY = area.getBottom() - 68;
+            trackMidiButton.setBounds(area.getCentreX() - 144, controlsY, 128, 30);
+            inputControlButton.setBounds(area.getCentreX() - 8, controlsY, 152, 30);
+            inputRoutingButton.setBounds(inputControlButton.getX(), inputControlButton.getBottom() + 4,
+                                         inputControlButton.getWidth(), 24);
         }
         else if (livePlayGroup >= 0)
             trackMidiButton.setBounds(area.getCentreX() - 90, area.getBottom() - 48, 180, 30);

@@ -2,14 +2,15 @@
 
 #include "VirtualMidiProtocol.h"
 
-// Editor/message-thread owned. Only live-play hits are sent; incoming host MIDI
+// Each client has one owner thread. Only live-play hits are sent; incoming host MIDI
 // is never echoed. The DAW's returned MIDI is the sole playback/capture source.
 class VirtualMidiClient
 {
 public:
     VirtualMidiClient();
     ~VirtualMidiClient();
-    void poll(int port, bool active);
+    void poll(int port, bool active, bool launchHelper = true);
+    bool takeHelperLaunchRequest() noexcept;
     bool trigger(int note, int velocity);
     bool isReady() const noexcept { return ready; }
     const juce::String& getError() const noexcept { return error; }
@@ -24,6 +25,7 @@ private:
     uint32_t sequence = 0, lastAcknowledged = 0;
     int port = 0, serverPort = 0;
     bool bound = false, ready = false;
+    bool helperLaunchRequested = false;
     double nextDiscovery = 0.0, nextClaim = 0.0, lastAccepted = 0.0, nextLaunch = 0.0;
     juce::String error;
     JUCE_DECLARE_NON_COPYABLE(VirtualMidiClient)

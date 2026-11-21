@@ -158,15 +158,18 @@ used by cursor shake. See [Touchpad Live Play](ui.md#touchpad-live-play).
 
 ### Microphone-Generated Hits
 
-INPUT CONTROL plays the non-directional pad's primary mapped MIDI note. At a
+AUDIO TRIGGER plays the non-directional pad's primary mapped MIDI note. At a
 peak of -35 dBFS or above, the detector measures the maximum absolute input
 amplitude in a 5 ms window, across both channels if stereo. It maps peak level
 linearly in dB from velocity 1 at -35 dBFS to 127 at -5 dBFS, with louder
-signals capped at 127. Onsets are at least 30 ms apart, and the input must
-stay below -38 dBFS for 12 ms before it rearms. To reduce retriggering from
-speaker bleed, a peak at least 4 dB quieter than the last accepted hit is
-suppressed if it arrives 210–260 ms later. Hits use the ordinary velocity
-layers and variations.
+signals capped at 127. Onsets are at least 60 ms apart. The detector rearms
+after 12 ms below -38 dBFS. It can also recognize a new attack over sustained
+audio when a 1 ms amplitude envelope reaches -35 dBFS and is at least three
+times its recent 10 ms average. Both paths use the same 5 ms peak window.
+To reduce retriggering from speaker bleed, a peak at least 4 dB quieter than
+the last accepted hit is suppressed if it arrives 210–260 ms later. The
+60 ms guard still applies after that suppressed onset. Hits use the ordinary
+velocity layers and variations.
 TRACK MIDI determines whether the hit uses the local gate, take capture and
 supported plugin MIDI output or is sent through the DAW's MIDI input.
 

@@ -82,6 +82,9 @@ set(SourceFiles
         Source/PluginProcessor.h
         Source/UI/BinaryImageLoader.h
         Source/UI/BinaryImageLoader.cpp
+        Source/UI/OnboardingModal.h
+        Source/UI/OnboardingModal.cpp
+        Source/UI/InputRoutingGuide.h
         Source/UI/RotarySliderRenderer.h
         Source/UI/RotarySliderRenderer.cpp
         Source/UI/TempoSyncButtonRenderer.h
@@ -178,7 +181,7 @@ juce_add_plugin(${PROJECT_NAME}
         PLUGIN_MANUFACTURER_CODE Tap1
         PLUGIN_CODE Reg0
         FORMATS ${PLUGIN_FORMATS}
-        PRODUCT_NAME "ulichpercsnewnew"
+        PRODUCT_NAME "Street Percussion"
         VST3_CATEGORIES Instrument
 )
 
@@ -222,6 +225,7 @@ target_compile_definitions(${PROJECT_NAME}
 file(GLOB SAMPLE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/samples/*.wav")
 file(GLOB TRANSIENT_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/transients/*.json")
 file(GLOB NOISE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/noise/*.wav")
+file(GLOB AUDIO_TRIGGER_IMAGES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ui/info/AUDIO TRIGGER/*.png")
 
 # Keep the noise inventory separate from percussion samples and UI resources.
 juce_add_binary_data(${PROJECT_NAME}NoiseData
@@ -238,6 +242,7 @@ juce_add_binary_data(${PROJECT_NAME}Data
         ui/rzhav.png
         ui/tempo_on.png
         ui/tempo_off.png
+        ${AUDIO_TRIGGER_IMAGES}
         ${SAMPLE_FILES}
         ${TRANSIENT_FILES}
 )

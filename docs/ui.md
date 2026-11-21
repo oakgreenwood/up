@@ -119,7 +119,7 @@ for the 2 ms edit fades and region-boundary crossfade.
 LP on a non-directional pad opens the same `#D9D9D9` playing area used for
 cursor shake. It replaces the grid, section gap and noise panel. The area shows
 centred black (`#000000`) `HIT TOUCHPAD TO PLAY` and two bottom controls,
-`TRACK MIDI` and `INPUT CONTROL`. The first click or tap-to-click in the area
+`TRACK MIDI` and `AUDIO TRIGGER`. The first click or tap-to-click in the area
 plays a hit. The close cross or a click outside dismisses the area.
 The grid returns to its previous page.
 
@@ -146,12 +146,25 @@ TRACK MIDI uses the same saved switch and DAW return-input check as cursor
 shake. With it off, the area plays locally. With it on, the area sends the
 selected pitch and velocity through `ULICHPERC MIDI` while open and unbypassed.
 
-Turning on INPUT CONTROL switches the area to `PLAY INTO THE MIC`, hides the
-touchpad pitch outline and uses the same TRACK MIDI routing switch. Turning
-INPUT CONTROL off restores touchpad play. Closing the area stops detection.
-The switch retains its choice for
-the lifetime of the editor. See [microphone routing](building.md#live-play-audio-input)
+Turning on AUDIO TRIGGER switches the area to `PLAY INTO THE MIC`, hides the
+touchpad pitch outline and uses the same TRACK MIDI routing switch. It also
+shows `Input routing` below the switch. Clicking it opens a modal guide for the
+detected DAW or Standalone. The modal is centered and takes 40% of the editor's
+width and height. It uses black text and a square black border on `#A5A4A4`,
+over a 70% black overlay. A matching screenshot fits below the instructions
+with a 15 px gap and keeps its aspect ratio. Click anywhere in the editor or
+press Escape to dismiss the guide. Hosts without a dedicated guide get general
+instrument sidechain instructions. Turning AUDIO TRIGGER off restores
+touchpad play. Closing the area stops detection. The switch retains its
+choice for the lifetime of the editor. See [microphone routing](building.md#live-play-audio-input)
 and [input velocity](samples-and-velocity.md#microphone-generated-hits).
+With TRACK MIDI on, a dedicated worker forwards microphone notes while the
+editor continues its regular refresh. The plugin plays the sample when Live
+returns the note.
+
+Routing screenshots are embedded PNGs under `ui/info/AUDIO TRIGGER`. Their
+basenames match the resource names in `Source/UI/InputRoutingGuide.h` with
+`.png` replacing `_png`. For example, Ableton Live uses `ableton.png`.
 
 macOS Debug builds log Touchpad Live Play click events, pressure events, and
 MIDI velocities to the system log. To capture a trace while playing, run:
@@ -167,9 +180,9 @@ To trace microphone Live Play in a macOS Debug build, run:
 ```
 
 The trace shows detected peaks, suppressed retriggers and the local and incoming
-MIDI note-ons sent to playback while INPUT CONTROL is open. Use `audioMs` to compare the timing of
-events within a device session. The editor drains a fixed event queue and
-writes the logs. The trace contains peak levels and MIDI events only.
+MIDI note-ons sent to playback while AUDIO TRIGGER is on. Use `audioMs` to
+compare the timing of events within a device session. The editor drains a fixed
+event queue and writes the logs. The trace contains peak levels and MIDI events only.
 
 ### Cursor Shake Mode
 

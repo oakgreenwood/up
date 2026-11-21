@@ -1,4 +1,5 @@
 #include "VirtualMidiClient.h"
+#include <utility>
 
 VirtualMidiClient::VirtualMidiClient()
     : clientId(static_cast<uint64_t>(juce::Random::getSystemRandom().nextInt64()) | 1ULL)
@@ -13,6 +14,7 @@ void VirtualMidiClient::release()
         send(VirtualMidi::Command::release);
     port = 0;
     ready = false;
+    helperLaunchRequested = false;
     lastAccepted = 0.0;
     lastAcknowledged = sequence;
 }
@@ -38,7 +40,7 @@ void VirtualMidiClient::discover(double now)
         if (now >= nextLaunch && VirtualMidi::helperFile().exists())
         {
             nextLaunch = now + 10000.0;
-            VirtualMidi::helperFile().startAsProcess();
+            helperLaunchRequested = true;
         }
         return;
     }
@@ -62,7 +64,12 @@ void VirtualMidiClient::discover(double now)
     }
 }
 
-void VirtualMidiClient::poll(int requestedPort, bool active)
+bool VirtualMidiClient::takeHelperLaunchRequest() noexcept
+{
+    return std::exchange(helperLaunchRequested, false);
+}
+
+void VirtualMidiClient::poll(int requestedPort, bool active, bool launchHelper)
 {
     requestedPort = active ? juce::jlimit(0, VirtualMidi::portCount, requestedPort) : 0;
     if (port != requestedPort)
@@ -83,6 +90,8 @@ void VirtualMidiClient::poll(int requestedPort, bool active)
     const auto now = juce::Time::getMillisecondCounterHiRes();
     if (now >= nextDiscovery)
         discover(now);
+    if (launchHelper && takeHelperLaunchRequest())
+        VirtualMidi::helperFile().startAsProcess();
     if (serverPort == 0)
         return;
     for (int i = 0; i < 16 && socket.waitUntilReady(true, 0) > 0; ++i)

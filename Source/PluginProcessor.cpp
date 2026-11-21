@@ -145,7 +145,16 @@ void AudioPluginAudioProcessor::setInputControlTarget(int note, bool trackMidi) 
         ? (static_cast<uint64_t>(note + 1) | (trackMidi ? inputControlTrackMidiBit : 0)) : 0;
     const auto previous = inputControlTarget.load(std::memory_order_relaxed);
     if ((previous & 0x1ff) != route)
-        inputControlTarget.store((((previous >> 9) + 1) << 9) | route, std::memory_order_relaxed);
+        inputControlTarget.store((((previous >> 9) + 1) << 9) | route, std::memory_order_release);
+}
+
+AudioPluginAudioProcessor::InputControlMidiTarget AudioPluginAudioProcessor::getInputControlMidiTarget() const noexcept
+{
+    const auto target = inputControlTarget.load(std::memory_order_acquire);
+    if ((target & inputControlTrackMidiBit) == 0 || getVirtualMidiInput() == 0 || isPlaybackBypassed())
+        return {};
+
+    return { target, inputControlResetGeneration.load(std::memory_order_relaxed), static_cast<int>(target & 0xff) - 1 };
 }
 
 const PercussionSound* AudioPluginAudioProcessor::getRepresentativeSampleSound(int groupIndex) const noexcept
@@ -623,7 +632,7 @@ void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& processBu
         sampler.resetPlaybackSequence();
         shakeMidi.resetForPlayback();
     }
-    const auto inputTarget = inputControlTarget.load(std::memory_order_relaxed);
+    const auto inputTarget = inputControlTarget.load(std::memory_order_acquire);
     const int inputChannels = getMainBusNumInputChannels();
     const bool inputControl = (inputTarget & 0xff) != 0;
     const bool detectInput = inputControl && inputChannels > 0;
